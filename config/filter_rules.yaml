@@ -1,0 +1,67 @@
+# Filter Rules - Track A/B 필터 조건 정의
+# Layer 3.5: Dynamic Filtering
+
+track_a:
+  name: "Hard Filter (실적 기반)"
+  description: "숫자가 찍혀야 간다"
+  target_sectors:
+    - "자동차"
+    - "음식료"
+    - "은행"
+    - "반도체부품"
+    - "철강"
+    - "화학"
+  conditions:
+    operating_profit_4q:
+      operator: ">"
+      value: 0
+      required: true
+      description: "최근 4분기 합산 영업이익 > 0"
+    debt_ratio:
+      operator: "<"
+      value: 200
+      required: true
+      description: "부채비율 < 200%"
+    pbr:
+      operator: "<"
+      value: 3.0
+      required: true
+      description: "PBR < 3.0 (과열 제외)"
+    avg_trading_value:
+      operator: ">="
+      value: 1000000000  # 10억
+      required: true
+      description: "일평균 거래대금 >= 10억"
+
+track_b:
+  name: "Soft Filter (성장 기반)"
+  description: "꿈을 먹고 간다"
+  target_sectors:
+    - "바이오"
+    - "AI"
+    - "로봇"
+    - "우주항공"
+    - "2차전지"
+    - "신재생에너지"
+  conditions:
+    capital_impairment:
+      operator: "<"
+      value: 50
+      required: true
+      description: "자본잠식률 < 50%"
+    current_ratio:
+      operator: ">"
+      value: 100
+      required: true
+      description: "유동비율 > 100%"
+    avg_trading_value:
+      operator: ">="
+      value: 500000000  # 5억
+      required: true
+      description: "일평균 거래대금 >= 5억"
+    rd_ratio:
+      operator: ">"
+      value: 5
+      required: false
+      description: "R&D 비중 > 5% (가산점)"
+      bonus_points: 10

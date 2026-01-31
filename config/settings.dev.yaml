@@ -1,0 +1,18 @@
+# Development Environment Settings
+
+app:
+  debug: true
+
+logging:
+  level: "DEBUG"
+
+database:
+  connection_string: "sqlite:///data/trading_dev.db"
+
+# 개발 환경에서는 제한된 종목만 처리
+ingest:
+  price:
+    lookback_days: 60
+
+decision:
+  top_n_for_llm: 5

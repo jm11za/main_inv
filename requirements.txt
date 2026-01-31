@@ -1,0 +1,36 @@
+# =============================================
+# Stock Analysis System - Requirements
+# =============================================
+
+# Data Processing
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Web Requests & Crawling
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+lxml>=4.9.0
+
+# API Clients
+pykrx>=1.0.0           # KRX 주가 데이터
+
+# Database
+sqlalchemy>=2.0.0
+
+# Configuration
+python-dotenv>=1.0.0
+pyyaml>=6.0.0
+
+# Logging
+loguru>=0.7.0
+
+# Testing & Quality
+pytest>=7.4.0
+pytest-cov>=4.1.0
+pylint>=3.0.0
+
+# Type Hints
+mypy>=1.5.0
+
+# Async Support (for future use)
+aiohttp>=3.9.0

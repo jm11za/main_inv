@@ -1,0 +1,140 @@
+# Main Settings - 메인 설정
+# 환경별 오버라이드: settings.dev.yaml, settings.prod.yaml
+
+app:
+  name: "swing_trading_system"
+  version: "1.0.0"
+  timezone: "Asia/Seoul"
+
+# 데이터 수집 설정
+ingest:
+  naver_theme:
+    base_url: "https://finance.naver.com"
+    delay_seconds: 1.0
+  news:
+    max_articles_per_stock: 30
+    lookback_days: 30
+  dart:
+    api_key: "${DART_API_KEY}"
+    timeout_seconds: 30
+  price:
+    provider: "krx"
+    lookback_days: 120
+
+# LLM 설정
+llm:
+  local:
+    provider: "ollama"
+    model: "deepseek-r1:14b"
+    base_url: "http://127.0.0.1:11434"
+    timeout_seconds: 300              # LLM 응답 타임아웃 (초)
+  cloud:
+    provider: "claude"
+    model: "claude-sonnet-4-20250514"
+    api_key: "${ANTHROPIC_API_KEY}"
+
+# Layer 3: Analysis
+analysis:
+  flow:
+    institution_weight: 1.2      # 기관 순매수 가중치
+    period_days: 20              # 수급 계산 기간 (일)
+    high_threshold: 0.5          # HIGH 판정 기준 (%)
+    low_threshold: -0.5          # LOW 판정 기준 (%)
+
+  breadth:
+    ma_period: 20                # 이동평균 기간
+    strong_threshold: 70         # STRONG 판정 기준 (%)
+    weak_threshold: 30           # WEAK 판정 기준 (%)
+
+  trend:
+    rsi_period: 14               # RSI 계산 기간
+    overheat_rsi: 70             # 과열 판정 RSI
+    strong_threshold: 60         # STRONG 판정 기준 (점)
+    weak_threshold: 30           # WEAK 판정 기준 (점)
+
+  tier:
+    flow_high_threshold: 0.3     # Tier 분류용 S_Flow HIGH 기준
+    trend_high_threshold: 50     # Tier 분류용 S_Trend HIGH 기준
+
+# Layer 3.5: Filtering
+filtering:
+  top_n_sectors: 10
+  fallback_type: "A"             # LLM 분류 실패 시 보수적 적용
+
+# Pipeline Filter 조건 (Track A: Hard Filter)
+pipeline:
+  filter:
+    track_a:
+      min_operating_profit_4q: 0           # 4분기 영업이익 합계 > 0 (원)
+      max_debt_ratio: 200                  # 부채비율 < 200%
+      max_pbr: 3.0                         # PBR < 3.0
+      min_trading_value: 1_000_000_000     # 일평균 거래대금 > 10억
+
+    track_b:
+      max_capital_impairment: 50           # 자본잠식률 < 50%
+      min_current_ratio: 100               # 유동비율 > 100%
+      min_rd_ratio: 5                      # R&D 비중 > 5% (가산점)
+      min_trading_value: 500_000_000       # 일평균 거래대금 > 5억
+
+# Layer 4: Scoring
+scoring:
+  # Track별 가중치
+  track_a:
+    financial_weight: 0.5            # 재무 50%
+    technical_weight: 0.5            # 차트/수급 50%
+  track_b:
+    financial_weight: 0.2            # 재무 20%
+    technical_weight: 0.8            # 차트/수급 80%
+
+  # 재무 점수 세부 가중치
+  financial:
+    operating_profit_yoy_weight: 0.3 # 영업이익 성장률
+    revenue_yoy_weight: 0.2          # 매출 성장률
+    roe_weight: 0.3                  # ROE
+    rd_ratio_weight: 0.1             # R&D 비중
+    debt_penalty_weight: 0.1         # 부채 패널티
+
+  # 기술적 점수 세부 가중치
+  technical:
+    supply_demand_weight: 0.35       # 수급 (외인+기관)
+    ma_gap_weight: 0.2               # MA20 이격도
+    volume_weight: 0.2               # 거래량 증가율
+    high_proximity_weight: 0.25      # 52주 신고가 근접도
+
+  # 상위 종목
+  top_n: 30                          # 상위 N개 종목만 Decision으로 전달
+
+# Layer 5: Decision
+decision:
+  top_n_for_llm: 20
+
+# Layer 6: Output
+output:
+  reports_dir: "./reports"
+  telegram:
+    bot_token: "${TELEGRAM_BOT_TOKEN}"
+    chat_id: "${TELEGRAM_CHAT_ID}"
+
+# Database
+database:
+  connection_string: "sqlite:///data/trading.db"
+  pool_size: 5
+
+# Cache
+cache:
+  backend: "memory"  # memory | redis
+  ttl: 3600
+  redis:
+    host: "localhost"
+    port: 6379
+    db: 0
+
+# Logging
+logging:
+  level: "INFO"
+  log_dir: "./logs"
+  format: "{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} | {message}"
+  file:
+    enabled: true
+    rotation: "10 MB"
+    retention: "7 days"

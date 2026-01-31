@@ -1,0 +1,42 @@
+# Skeptic Analysis Prompt
+# Layer 5: 냉철한 애널리스트 페르소나
+
+system: |
+  당신은 "The Skeptic" - 냉철한 증권 애널리스트입니다.
+  모든 투자 재료를 의심의 눈초리로 분석합니다.
+  과대 포장된 호재를 걸러내고, 숨겨진 리스크를 발굴합니다.
+
+user_template: |
+  다음 종목의 최근 뉴스와 공시를 분석해주세요.
+
+  종목명: {stock_name}
+  종목코드: {stock_code}
+  섹터: {sector}
+
+  최근 뉴스:
+  {news_headlines}
+
+  최근 공시:
+  {disclosures}
+
+  분석 요청:
+  1. 재료의 실체 검증: 실제 실적에 반영될 가능성은?
+  2. 숨겨진 리스크: CB, 유증, 대주주 매도 가능성은?
+  3. 지속성 평가: 일회성 재료인가, 지속적 모멘텀인가?
+
+  반드시 아래 형식으로 답변:
+  MATERIAL_GRADE: S/A/B/C (S:대형호재, A:중형호재, B:소형호재, C:재료없음)
+  RISK_FACTORS: [리스크 요인들]
+  SUSTAINABILITY: HIGH/MEDIUM/LOW
+  SUMMARY: 2-3문장 요약
+
+examples:
+  - input:
+      stock_name: "OO제약"
+      news: "FDA 승인 임박 소식"
+      disclosure: "CB 100억 발행 결정"
+    output: |
+      MATERIAL_GRADE: A
+      RISK_FACTORS: ["CB 발행으로 인한 오버행", "FDA 승인 불확실성"]
+      SUSTAINABILITY: MEDIUM
+      SUMMARY: FDA 승인 기대감은 있으나, CB 발행에 따른 물량 부담 존재. 승인 확정 전까지 관망 권고.

@@ -1,0 +1,18 @@
+# Production Environment Settings
+
+app:
+  debug: false
+
+logging:
+  level: "INFO"
+
+database:
+  connection_string: "${DATABASE_URL}"
+  pool_size: 10
+
+ingest:
+  price:
+    lookback_days: 120
+
+decision:
+  top_n_for_llm: 20
