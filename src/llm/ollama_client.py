@@ -55,30 +55,128 @@ class OllamaClient(LLMClient):
 
         self.logger.info(f"Ollama 클라이언트 초기화: {self.model} @ {self.base_url}")
 
-    def is_available(self) -> bool:
-        """Ollama 서버 및 모델 사용 가능 여부"""
+    def is_available(self, check_timeout: float = 3.0, test_generation: bool = False) -> bool:
+        """
+        Ollama 서버 및 모델 사용 가능 여부
+
+        Args:
+            check_timeout: 연결 확인 타임아웃 (초) - 기본 3초
+            test_generation: 실제 생성 테스트 수행 여부 (기본 False)
+
+        Returns:
+            사용 가능 여부
+        """
         try:
+            # 1단계: 서버 연결 및 모델 목록 확인
             response = requests.get(
                 f"{self.base_url}/api/tags",
-                timeout=5
+                timeout=(check_timeout, check_timeout)
             )
             if response.status_code != 200:
+                self.logger.warning(f"Ollama 서버 응답 오류: HTTP {response.status_code}")
                 return False
 
             models = response.json().get("models", [])
             model_names = [m.get("name", "") for m in models]
 
-            # 정확히 일치하거나 ":latest" 버전 체크
+            # 모델 존재 확인
+            model_found = False
             for name in model_names:
                 if self.model in name or name in self.model:
-                    return True
+                    model_found = True
+                    break
 
-            self.logger.warning(f"모델 {self.model}을 찾을 수 없음. 사용 가능: {model_names}")
+            if not model_found:
+                self.logger.warning(f"모델 {self.model}을 찾을 수 없음. 사용 가능: {model_names}")
+                return False
+
+            # 2단계: 실제 생성 테스트 (옵션)
+            if test_generation:
+                return self._test_generation(timeout=check_timeout + 10)
+
+            self.logger.debug(f"Ollama 모델 확인: {self.model}")
+            return True
+
+        except requests.exceptions.ConnectTimeout:
+            self.logger.warning(f"Ollama 서버 연결 타임아웃 ({check_timeout}초)")
             return False
-
+        except requests.exceptions.ConnectionError:
+            self.logger.warning("Ollama 서버에 연결할 수 없음 (서버 미실행?)")
+            return False
         except Exception as e:
-            self.logger.error(f"Ollama 연결 실패: {e}")
+            self.logger.warning(f"Ollama 연결 실패: {e}")
             return False
+
+    def _test_generation(self, timeout: float = 300.0) -> bool:
+        """
+        실제 생성 테스트 - 모델이 응답하는지 확인
+
+        Args:
+            timeout: 생성 타임아웃 (초) - 기본 5분 (모델 로드 시간 고려)
+
+        Returns:
+            생성 성공 여부
+        """
+        try:
+            self.logger.info(f"Ollama 생성 테스트 중... (최대 {timeout}초 대기)")
+
+            payload = {
+                "model": self.model,
+                "prompt": "1+1=",  # 간단한 테스트 프롬프트
+                "stream": False,
+                "options": {
+                    "num_predict": 5,  # 최소 토큰만 생성
+                }
+            }
+
+            response = requests.post(
+                f"{self.base_url}/api/generate",
+                json=payload,
+                timeout=timeout
+            )
+
+            if response.status_code == 200:
+                result = response.json().get("response", "")
+                if result:
+                    self.logger.info(f"Ollama 생성 테스트 성공: '{result.strip()[:20]}'")
+                    return True
+                else:
+                    self.logger.warning("Ollama 생성 테스트: 빈 응답")
+                    return False
+            else:
+                self.logger.warning(f"Ollama 생성 테스트 실패: HTTP {response.status_code}")
+                return False
+
+        except requests.exceptions.Timeout:
+            self.logger.warning(f"Ollama 생성 테스트 타임아웃 ({timeout}초)")
+            return False
+        except Exception as e:
+            self.logger.warning(f"Ollama 생성 테스트 실패: {e}")
+            return False
+
+    def warmup(self, timeout: float = 300.0) -> bool:
+        """
+        모델 Warm-up (미리 로드)
+
+        첫 호출 시 모델 로드 시간이 오래 걸리므로
+        파이프라인 시작 전 미리 로드하여 지연 방지
+
+        Args:
+            timeout: 최대 대기 시간 (초) - 기본 5분
+
+        Returns:
+            성공 여부
+        """
+        self.logger.info(f"[Warm-up] 모델 로드 중: {self.model} (최대 {timeout}초)")
+
+        success = self._test_generation(timeout=timeout)
+
+        if success:
+            self.logger.info(f"[Warm-up] 모델 준비 완료: {self.model}")
+        else:
+            self.logger.warning(f"[Warm-up] 모델 로드 실패: {self.model}")
+
+        return success
 
     def generate(self, prompt: str, **kwargs) -> str:
         """

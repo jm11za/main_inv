@@ -4,6 +4,7 @@
 > - v1.0 (2025-01-31): 초안 작성
 > - v2.0 (2025-01-31): Layer 3.5 (Dynamic Stock Filtering) 추가, 전체 흐름 설명 보강
 > - v2.1 (2026-01-31): Sentiment Reader A+B+C 통합 분석, 토론방 크롤러 추가, 섹터 라벨링 로직 개선
+> - v3.0 (2026-02-01): **SectorCategory Enum 제거 → 네이버 테마명 문자열 직접 사용**, N:M 종목-테마 관계 지원, 모듈 구조 개편
 
 ---
 
@@ -1166,20 +1167,210 @@ class DailyPipeline:
 │  ────────────────────────────────────────────────────────────────   │
 │  primary_sector = weighted_sum(테마 + DART + 뉴스 + LLM)            │
 │                                                                     │
-│  [TO-BE] 소스별 역할 분리                                           │
+│  [TO-BE] v3.0 방식                                                  │
 │  ────────────────────────────────────────────────────────────────   │
-│  primary_sector   = 네이버 테마 기반 (투자자 관심 기준)             │
-│  secondary_sectors = DART + 뉴스 → LLM 분석 (실제 사업 기준)        │
+│  theme_tags = 네이버 테마명 그대로 사용 (N:M 관계)                  │
+│  business_summary = DART 사업개요 → LLM 요약                        │
+│  news_summary = 뉴스 헤드라인 → LLM 요약                            │
 │                                                                     │
 │  장점:                                                              │
-│  • 투자자 시선(테마)과 실체(DART/뉴스)를 분리                       │
-│  • LLM은 보조 섹터 결정에만 집중 → 비용 절감                        │
+│  • 섹터(테마) 분류와 부가정보(LLM요약)를 분리                       │
+│  • 1종목 N섹터 관계 자연스럽게 지원                                 │
 │                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-*문서 버전: 2.1*
-*작성일: 2026-01-31*
-*주요 변경: Layer 3.5 (Dynamic Filtering) 추가, 이원화 필터링 로직 상세화, Sentiment A+B+C 통합, 섹터 라벨링 개선*
+---
+
+## 14. v3.0 아키텍처 변경사항 (2026-02-01)
+
+### 14.1 핵심 변경: SectorCategory Enum 제거
+
+기존에는 테마를 `SectorCategory` Enum (예: `SEMICONDUCTOR`, `SECONDARY_BATTERY`)으로 관리했으나, 네이버 테마명 문자열을 직접 사용하는 방식으로 변경되었습니다.
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  [AS-IS] v2.x                                                           │
+│  ─────────────────────────────────────────────────────────────────────  │
+│  • SectorCategory Enum으로 제한된 섹터 (20개 정도)                       │
+│  • 새 테마 추가 시 코드 수정 필요                                        │
+│  • 1:N 관계 (종목 → 하나의 섹터)                                        │
+│                                                                         │
+│  [TO-BE] v3.0                                                           │
+│  ─────────────────────────────────────────────────────────────────────  │
+│  • 네이버 테마명 문자열 그대로 사용 (예: "반도체", "2차전지", "AI")       │
+│  • 새 테마 자동 지원 (코드 수정 불필요)                                  │
+│  • N:M 관계 (종목 ↔ 여러 테마)                                          │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### 14.2 모듈 구조 변경
+
+| AS-IS (v2.x) | TO-BE (v3.0) | 변경 사항 |
+|--------------|--------------|-----------|
+| `processing/sector_labeler.py` | **삭제** | `sector/classifier.py`로 이동 |
+| `sector/classifier.py` | `StockThemeAnalyzer` | 테마 데이터셋 구축 |
+| `sector/type_analyzer.py` | `SectorTypeAnalyzer` | 테마명 문자열로 Type A/B 분류 |
+| `sector/prioritizer.py` | `SectorPrioritizer` | `ThemeMetrics` 클래스 사용 |
+| `stock/selector.py` | `CandidateSelector` | `sector: str` 필드 (문자열) |
+
+### 14.3 핵심 데이터 클래스 (v3.0)
+
+```python
+# 테마 데이터 (v3.0)
+@dataclass
+class ThemeData:
+    theme_id: str           # "theme_001"
+    theme_name: str         # "반도체" (네이버 테마명 그대로)
+    change_rate: float      # 등락률
+    stock_count: int        # 소속 종목 수
+    stock_codes: list[str]  # 소속 종목 코드
+
+# 종목 분석 데이터 (v3.0)
+@dataclass
+class StockAnalysisData:
+    stock_code: str
+    stock_name: str
+    theme_tags: list[str]   # ["반도체", "AI", "HBM"] - N개 테마 소속 가능
+    business_summary: str   # LLM 사업 요약
+    news_summary: str       # LLM 뉴스 요약
+
+# 테마 지표 (v3.0)
+@dataclass
+class ThemeMetrics:
+    theme_name: str         # "반도체" (문자열)
+    sector_type: SectorType # TYPE_A or TYPE_B
+    stock_count: int
+    change_rate: float
+    s_flow: float
+    s_breadth: float
+    s_trend: float
+    news_count: int
+    hot_keywords: list[str]
+
+# 후보 종목 결과 (v3.0)
+@dataclass
+class CandidateResult:
+    stock_code: str
+    stock_name: str
+    sector: str             # "반도체" (Enum → 문자열)
+    sector_rank: int
+    track_type: TrackType
+    # ... 나머지 필드 동일
+```
+
+### 14.4 파이프라인 단계 (v3.0)
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  Stage 0: 데이터 수집 (StageRunner)                                      │
+│  ─────────────────────────────────────────────────────────────────────  │
+│  • 0-1: 테마 크롤링 (NaverThemeCrawler)                                  │
+│  • 0-2: 주가 수집 (PriceFetcher)                                        │
+│  • 0-3: 재무 수집 (DartClient)                                          │
+│  • 0-4: 수급/펀더멘탈 수집 (pykrx)                                       │
+│  • 0-5: 뉴스 수집 (NewsCrawler)                                         │
+│  • 0-6: DART 사업개요 수집                                               │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│  Stage 1: 섹터 분류 (StockThemeAnalyzer)                                 │
+│  ─────────────────────────────────────────────────────────────────────  │
+│  INPUT:                                                                 │
+│    - themes: 네이버 테마 목록                                            │
+│    - theme_stocks: 테마-종목 매핑                                        │
+│    - dart_data: {종목코드: DART 사업개요 텍스트}                          │
+│    - news_data: {종목코드: [뉴스 기사]}                                   │
+│                                                                         │
+│  OUTPUT:                                                                │
+│    - theme_stocks_map: {테마명: [종목코드,...]}                          │
+│    - stock_themes_map: {종목코드: [테마명,...]}  ← N:M 관계              │
+│    - stocks_data: StockAnalysisData[]                                   │
+│        - stock_code, stock_name                                         │
+│        - theme_tags: [테마명,...]  ← 섹터 (N개 가능)                     │
+│        - business_summary: DART LLM 요약                                │
+│        - news_summary: 뉴스 LLM 요약                                    │
+│                                                                         │
+│  핵심: 1종목이 여러 섹터(테마)에 속할 수 있음 (N:M)                       │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│  Stage 2: 섹터 타입 분류 (SectorTypeAnalyzer)                            │
+│  ─────────────────────────────────────────────────────────────────────  │
+│  • Input: theme_names (문자열 리스트)                                    │
+│  • Output: {테마명: SectorType} (예: {"반도체": TYPE_B, "은행": TYPE_A}) │
+│  • 키워드 기반 + LLM 분류                                                │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│  Stage 3: 섹터 우선순위 (SectorPrioritizer)                              │
+│  ─────────────────────────────────────────────────────────────────────  │
+│  • Input: ThemeMetrics[] (S_Flow, S_Breadth, S_Trend, 뉴스 수)          │
+│  • Output: 상위 N개 테마 (점수순 + LLM 전망 분석)                        │
+│  • 부정 테마 배제 (LLM negative 판정)                                    │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│  Stage 4: 종목 선정 (CandidateSelector)                                  │
+│  ─────────────────────────────────────────────────────────────────────  │
+│  • Input: stocks_data[], sector_type_map: {테마명: SectorType}          │
+│  • Process: Track A/B 필터 → 점수화 → 순위                              │
+│  • Output: CandidateResult[] (테마당 N개, 전체 최대 M개)                 │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│  Stage 5: 최종 검증 (MaterialAnalyzer + SentimentAnalyzer)               │
+│  ─────────────────────────────────────────────────────────────────────  │
+│  • 5-1: 커뮤니티 수집 (선정 종목만)                                      │
+│  • 5-2: 재료 분석 (Skeptic - Claude)                                    │
+│  • 5-3: 심리 분석 (Sentiment - Claude)                                  │
+│  • 5-4: DecisionEngine → STRONG_BUY / BUY / WATCH / AVOID              │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│  Stage 6: 아웃풋 (StageSaver + ReportGenerator + TelegramNotifier)       │
+│  ─────────────────────────────────────────────────────────────────────  │
+│  • 단계별 결과 JSON 저장                                                 │
+│  • 일일 리포트 생성                                                      │
+│  • 텔레그램 메시지 발송                                                  │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### 14.5 하위 호환성
+
+기존 코드와의 호환성을 위해 deprecated 별칭이 유지됩니다:
+
+```python
+# sector/__init__.py
+from src.sector.classifier import SectorClassifier  # deprecated → StockThemeAnalyzer
+from src.sector.prioritizer import SectorMetrics    # deprecated → ThemeMetrics
+
+# stock/selector.py
+def get_by_sector(...)  # deprecated → get_by_theme()
+```
+
+### 14.6 테스트 커버리지 (v3.0)
+
+| 모듈 | 테스트 파일 | 테스트 수 |
+|------|------------|----------|
+| `sector/classifier.py` | `tests/sector/test_classifier.py` | 31개 |
+| `sector/type_analyzer.py` | `tests/sector/test_type_analyzer.py` | 27개 |
+| `sector/prioritizer.py` | `tests/sector/test_prioritizer.py` | 23개 |
+| `stock/selector.py` | `tests/stock/test_selector.py` | 20개 |
+| `output/*` | `tests/test_output.py` | 37개 |
+| **총계** | | **138개** |
+
+---
+
+*문서 버전: 3.0*
+*작성일: 2026-02-01*
+*주요 변경: SectorCategory Enum 제거, 테마명 문자열 직접 사용, N:M 종목-테마 관계, 모듈 구조 개편*

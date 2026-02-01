@@ -1,21 +1,26 @@
 """
-DART OpenAPI 클라이언트
+DART OpenAPI 클라이언트 (OpenDartReader 기반)
 
 재무제표 및 사업보고서 데이터 수집
+- OpenDartReader 라이브러리 사용
+- 종목코드/회사명으로 자동 조회
+- 파일 기반 캐시 (24시간 유효)
 """
 import os
-import time
+import json
+import hashlib
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
 from enum import Enum
 
-import requests
 import pandas as pd
+import OpenDartReader
 
 from src.ingest.base import BaseDataFetcher
 from src.core.config import get_config
-from src.core.exceptions import APIError, RateLimitError
+from src.core.exceptions import APIError
 
 
 class ReportType(Enum):
@@ -80,7 +85,6 @@ class FinancialData:
             self.current_ratio = (self.current_assets / self.current_liabilities) * 100
 
         # 자본잠식률 계산: (자본금 - 총자본) / 자본금 * 100
-        # 총자본 < 자본금 이면 자본잠식 상태
         if self.capital_stock > 0:
             if self.total_equity < self.capital_stock:
                 self.capital_impairment = ((self.capital_stock - self.total_equity) / self.capital_stock) * 100
@@ -94,19 +98,18 @@ class FinancialData:
 
 class DartApiClient(BaseDataFetcher):
     """
-    DART OpenAPI 클라이언트
+    DART OpenAPI 클라이언트 (OpenDartReader 기반)
 
     사용법:
         client = DartApiClient()
 
-        # 재무제표 조회
-        financial = client.fetch_financial_statements("005930", 2024)
+        # 재무제표 조회 (종목코드 또는 회사명)
+        financial = client.fetch_financial_summary("005930", 2024)
+        financial = client.fetch_financial_summary("삼성전자", 2024)
 
-        # 공시 목록 조회
-        disclosures = client.fetch_disclosure_list("005930")
+        # 회사 정보 조회
+        company = client.get_company_info("005930")
     """
-
-    BASE_URL = "https://opendart.fss.or.kr/api"
 
     def __init__(self, api_key: str | None = None):
         super().__init__()
@@ -116,135 +119,142 @@ class DartApiClient(BaseDataFetcher):
         # API 키: 인자 > 환경변수 > 설정파일
         self.api_key = (
             api_key
+            or os.getenv("DART_API_KEY_2")  # 백업 키 우선
             or os.getenv("DART_API_KEY")
             or config.get("ingest.dart.api_key", "")
         )
 
         if not self.api_key or self.api_key.startswith("${"):
             self.logger.warning("DART API 키가 설정되지 않았습니다")
+            self._dart = None
+        else:
+            # OpenDartReader 초기화
+            self._dart = OpenDartReader(self.api_key)
+            self.logger.info("OpenDartReader 초기화 완료")
 
-        self.timeout = config.get("ingest.dart.timeout_seconds", 30)
-        self.retry_count = config.get("ingest.dart.retry_count", 3)
-        self.session = requests.Session()
-
-        # 종목코드 → DART 고유번호 매핑 캐시
-        self._corp_code_cache: dict[str, str] = {}
+        # 파일 기반 캐시 설정
+        self.cache_enabled = config.get("ingest.dart.cache_enabled", True)
+        self.cache_ttl_hours = config.get("ingest.dart.cache_ttl_hours", 24)
+        self.cache_dir = Path(config.get("ingest.dart.cache_dir", "./cache/dart"))
+        if self.cache_enabled:
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
 
     def get_source_name(self) -> str:
         return "DART"
 
     def fetch(self) -> Any:
         """기본 fetch는 미구현 (특정 종목 지정 필요)"""
-        raise NotImplementedError("fetch_financial_statements() 또는 fetch_disclosure_list() 사용")
+        raise NotImplementedError("fetch_financial_summary() 사용")
 
-    def _request(
-        self,
-        endpoint: str,
-        params: dict | None = None,
-        retry: int = 0
-    ) -> dict:
-        """API 요청 공통 처리"""
-        url = f"{self.BASE_URL}/{endpoint}"
+    def _get_cache_key(self, method: str, *args) -> str:
+        """캐시 키 생성"""
+        key_str = f"{method}:{':'.join(str(a) for a in args)}"
+        return hashlib.md5(key_str.encode()).hexdigest()
 
-        if params is None:
-            params = {}
-        params["crtfc_key"] = self.api_key
+    def _get_from_cache(self, cache_key: str) -> dict | None:
+        """캐시에서 데이터 조회"""
+        if not self.cache_enabled:
+            return None
+
+        cache_file = self.cache_dir / f"{cache_key}.json"
+        if not cache_file.exists():
+            return None
 
         try:
-            response = self.session.get(url, params=params, timeout=self.timeout)
-            response.raise_for_status()
+            with open(cache_file, "r", encoding="utf-8") as f:
+                cached = json.load(f)
 
-            data = response.json()
+            # TTL 확인
+            cached_at = datetime.fromisoformat(cached.get("_cached_at", "2000-01-01"))
+            if datetime.now() - cached_at > timedelta(hours=self.cache_ttl_hours):
+                cache_file.unlink()  # 만료된 캐시 삭제
+                return None
 
-            # DART API 에러 코드 처리
-            status = data.get("status", "000")
-            if status == "013":
-                raise RateLimitError("DART API 요청 한도 초과", retry_after=60)
-            elif status == "020":
-                # 조회된 데이터 없음 (정상 케이스)
-                return {"status": "020", "message": "조회된 데이터 없음", "list": []}
-            elif status != "000":
-                raise APIError(f"DART API 오류: {data.get('message', status)}")
+            self.logger.debug(f"캐시 히트: {cache_key[:8]}...")
+            return cached.get("data")
+        except Exception:
+            return None
 
-            return data
+    def _save_to_cache(self, cache_key: str, data: dict) -> None:
+        """캐시에 데이터 저장"""
+        if not self.cache_enabled:
+            return
 
-        except requests.RequestException as e:
-            if retry < self.retry_count:
-                self.logger.warning(f"DART API 재시도 ({retry + 1}/{self.retry_count}): {e}")
-                time.sleep(2 ** retry)  # 지수 백오프
-                return self._request(endpoint, params, retry + 1)
-            raise APIError(f"DART API 요청 실패: {e}")
+        cache_file = self.cache_dir / f"{cache_key}.json"
+        try:
+            with open(cache_file, "w", encoding="utf-8") as f:
+                json.dump({
+                    "_cached_at": datetime.now().isoformat(),
+                    "data": data
+                }, f, ensure_ascii=False)
+        except Exception as e:
+            self.logger.debug(f"캐시 저장 실패: {e}")
 
-    def fetch_corp_code(self, stock_code: str) -> str | None:
+    def get_company_info(self, corp: str) -> dict | None:
         """
-        종목코드로 DART 고유번호 조회
+        회사 정보 조회
 
         Args:
-            stock_code: 종목코드 (예: "005930")
+            corp: 종목코드 (005930) 또는 회사명 (삼성전자)
 
         Returns:
-            DART 고유번호 (8자리) 또는 None
+            회사 정보 dict 또는 None
         """
-        # 캐시 확인
-        if stock_code in self._corp_code_cache:
-            return self._corp_code_cache[stock_code]
+        if not self._dart:
+            return None
 
-        # 고유번호 파일이 없으면 다운로드 필요
-        # (실제로는 corpCode.xml 파일을 다운받아 파싱해야 함)
-        # 여기서는 간단히 API로 회사 검색
+        cache_key = self._get_cache_key("company", corp)
+        cached = self._get_from_cache(cache_key)
+        if cached:
+            return cached
+
         try:
-            data = self._request("company.json", {"corp_code": stock_code})
-            if data.get("status") == "000":
-                corp_code = data.get("corp_code")
-                self._corp_code_cache[stock_code] = corp_code
-                return corp_code
-        except Exception:
-            pass
+            result = self._dart.company(corp)
+            if result and result.get("status") == "000":
+                self._save_to_cache(cache_key, result)
+                return result
+        except Exception as e:
+            self.logger.warning(f"회사 정보 조회 실패 [{corp}]: {e}")
 
         return None
 
     def fetch_financial_statements(
         self,
-        stock_code: str,
+        corp: str,
         year: int,
-        report_type: ReportType = ReportType.ANNUAL,
-        fs_div: str = "CFS"  # CFS: 연결, OFS: 개별
+        report_type: ReportType = ReportType.ANNUAL
     ) -> pd.DataFrame:
         """
-        재무제표 조회 (전체 계정과목)
+        재무제표 조회
 
         Args:
-            stock_code: 종목코드
+            corp: 종목코드 또는 회사명
             year: 사업연도
             report_type: 보고서 유형
-            fs_div: 재무제표 구분 (CFS: 연결, OFS: 개별)
 
         Returns:
             DataFrame with 재무제표 항목
         """
-        self.logger.debug(f"재무제표 조회: {stock_code}, {year}, {report_type.name}")
+        if not self._dart:
+            return pd.DataFrame()
+
+        self.logger.debug(f"재무제표 조회: {corp}, {year}, {report_type.name}")
 
         try:
-            data = self._request("fnlttSinglAcntAll.json", {
-                "corp_code": stock_code,
-                "bsns_year": str(year),
-                "reprt_code": report_type.value,
-                "fs_div": fs_div,
-            })
-
-            if not data.get("list"):
-                return pd.DataFrame()
-
-            df = pd.DataFrame(data["list"])
-            return df
-
+            df = self._dart.finstate(corp, year, reprt_code=report_type.value)
+            if df is not None and len(df) > 0:
+                return df
+        except ValueError as e:
+            # 회사를 찾을 수 없는 경우
+            self.logger.debug(f"재무제표 조회 실패 [{corp}]: {e}")
         except Exception as e:
-            self.logger.error(f"재무제표 조회 실패 [{stock_code}]: {e}")
-            return pd.DataFrame()
+            self.logger.warning(f"재무제표 조회 실패 [{corp}]: {e}")
+
+        return pd.DataFrame()
 
     def fetch_financial_summary(
         self,
-        stock_code: str,
+        corp: str,
         year: int,
         report_type: ReportType = ReportType.ANNUAL
     ) -> FinancialData | None:
@@ -252,14 +262,20 @@ class DartApiClient(BaseDataFetcher):
         주요 재무지표 요약 조회
 
         Args:
-            stock_code: 종목코드
+            corp: 종목코드 또는 회사명
             year: 사업연도
             report_type: 보고서 유형
 
         Returns:
             FinancialData 객체 또는 None
         """
-        df = self.fetch_financial_statements(stock_code, year, report_type)
+        # 캐시 확인
+        cache_key = self._get_cache_key("financial_summary", corp, year, report_type.value)
+        cached = self._get_from_cache(cache_key)
+        if cached:
+            return FinancialData(**cached)
+
+        df = self.fetch_financial_statements(corp, year, report_type)
 
         if df.empty:
             return None
@@ -270,11 +286,16 @@ class DartApiClient(BaseDataFetcher):
                 """계정과목별 금액 추출"""
                 row = df[df["account_nm"].str.contains(account_nm, na=False)]
                 if not row.empty:
-                    # thstrm_amount: 당기금액
                     amt = row.iloc[0].get("thstrm_amount", "0")
                     if amt and amt != "-":
+                        # 숫자 문자열 처리 (쉼표 제거)
                         return float(str(amt).replace(",", ""))
                 return default
+
+            # 회사 정보 가져오기
+            company_info = self.get_company_info(corp)
+            stock_code = company_info.get("stock_code", corp) if company_info else corp
+            stock_name = company_info.get("corp_name", "") if company_info else ""
 
             # 분기 결정
             quarter_map = {
@@ -284,9 +305,9 @@ class DartApiClient(BaseDataFetcher):
                 ReportType.ANNUAL: 4,
             }
 
-            return FinancialData(
+            result = FinancialData(
                 stock_code=stock_code,
-                stock_name=df.iloc[0].get("corp_name", "") if not df.empty else "",
+                stock_name=stock_name,
                 report_type=report_type.value,
                 year=year,
                 quarter=quarter_map.get(report_type, 4),
@@ -303,111 +324,76 @@ class DartApiClient(BaseDataFetcher):
                 retained_earnings=get_amount("이익잉여금") or get_amount("결손금", 0.0),
             )
 
+            # 캐시 저장
+            self._save_to_cache(cache_key, {
+                "stock_code": result.stock_code,
+                "stock_name": result.stock_name,
+                "report_type": result.report_type,
+                "year": result.year,
+                "quarter": result.quarter,
+                "revenue": result.revenue,
+                "operating_profit": result.operating_profit,
+                "net_income": result.net_income,
+                "rd_expense": result.rd_expense,
+                "total_assets": result.total_assets,
+                "total_liabilities": result.total_liabilities,
+                "total_equity": result.total_equity,
+                "current_assets": result.current_assets,
+                "current_liabilities": result.current_liabilities,
+                "capital_stock": result.capital_stock,
+                "retained_earnings": result.retained_earnings,
+            })
+
+            return result
+
         except Exception as e:
-            self.logger.error(f"재무지표 파싱 실패 [{stock_code}]: {e}")
+            self.logger.error(f"재무지표 파싱 실패 [{corp}]: {e}")
             return None
-
-    def fetch_financial_4q(
-        self,
-        stock_code: str,
-        year: int,
-        fs_div: str = "CFS"
-    ) -> list[FinancialData]:
-        """
-        최근 4분기 재무제표 조회
-
-        Args:
-            stock_code: 종목코드
-            year: 기준 사업연도
-            fs_div: 재무제표 구분 (CFS: 연결, OFS: 개별)
-
-        Returns:
-            4분기 FinancialData 리스트 (최신순)
-        """
-        results = []
-        report_types = [
-            (year, ReportType.ANNUAL),       # 4Q
-            (year, ReportType.Q3),           # 3Q
-            (year, ReportType.SEMI_ANNUAL),  # 2Q
-            (year, ReportType.Q1),           # 1Q
-        ]
-
-        for y, rt in report_types:
-            data = self.fetch_financial_summary(stock_code, y, rt)
-            if data:
-                results.append(data)
-
-        return results
-
-    def get_operating_profit_4q_sum(
-        self,
-        stock_code: str,
-        year: int
-    ) -> float:
-        """
-        최근 4분기 영업이익 합산
-
-        Args:
-            stock_code: 종목코드
-            year: 기준 사업연도
-
-        Returns:
-            4분기 합산 영업이익 (데이터 없으면 0)
-        """
-        quarters = self.fetch_financial_4q(stock_code, year)
-
-        if not quarters:
-            return 0.0
-
-        # 연간 보고서가 있으면 그걸 사용 (이미 4분기 합산됨)
-        for q in quarters:
-            if q.quarter == 4:
-                return q.operating_profit
-
-        # 분기별 합산
-        return sum(q.operating_profit for q in quarters)
 
     def get_comprehensive_financials(
         self,
-        stock_code: str,
-        year: int
+        corp: str,
+        year: int,
+        max_fallback_years: int = 3
     ) -> dict:
         """
         종목의 종합 재무 정보 조회 (필터용)
 
         Args:
-            stock_code: 종목코드
+            corp: 종목코드 또는 회사명
             year: 기준 사업연도
+            max_fallback_years: 데이터 없을 시 이전 연도 조회 횟수 (기본 3년)
 
         Returns:
             dict with all financial metrics needed for filtering
         """
-        # 최신 재무제표 조회
-        latest = self.fetch_financial_summary(stock_code, year, ReportType.ANNUAL)
+        latest = None
+
+        # 최근 연도부터 순차적으로 조회 (최대 max_fallback_years년 전까지)
+        for try_year in range(year, year - max_fallback_years - 1, -1):
+            # 사업보고서 먼저 시도
+            latest = self.fetch_financial_summary(corp, try_year, ReportType.ANNUAL)
+            if latest:
+                break
+
+            # 사업보고서 없으면 반기보고서 시도
+            latest = self.fetch_financial_summary(corp, try_year, ReportType.SEMI_ANNUAL)
+            if latest:
+                break
 
         if not latest:
-            # 사업보고서 없으면 반기 시도
-            latest = self.fetch_financial_summary(stock_code, year, ReportType.SEMI_ANNUAL)
-
-        if not latest:
-            self.logger.warning(f"재무 데이터 없음: {stock_code}")
+            self.logger.debug(f"재무 데이터 없음: {corp} ({year}~{year - max_fallback_years}년)")
             return {
-                "stock_code": stock_code,
+                "stock_code": corp,
                 "has_data": False,
             }
 
-        # 4분기 합산 영업이익
-        op_profit_4q = self.get_operating_profit_4q_sum(stock_code, year)
-
-        # 사업보고서 텍스트 조회 (섹터 라벨링용)
-        business_text = self.fetch_business_report(stock_code, year)
-
         return {
-            "stock_code": stock_code,
+            "stock_code": latest.stock_code,
             "stock_name": latest.stock_name,
             "has_data": True,
             # Track A 필터용
-            "operating_profit_4q": op_profit_4q,
+            "operating_profit_4q": latest.operating_profit,  # 연간 보고서는 이미 4분기 합산
             "debt_ratio": latest.debt_ratio,
             # Track B 필터용
             "capital_impairment": latest.capital_impairment,
@@ -421,172 +407,105 @@ class DartApiClient(BaseDataFetcher):
             "total_equity": latest.total_equity,
             "capital_stock": latest.capital_stock,
             "rd_expense": latest.rd_expense,
-            # 사업보고서 (섹터 라벨링용)
-            "business_report": business_text,
             # 메타
             "year": latest.year,
             "quarter": latest.quarter,
             "fetched_at": latest.fetched_at.isoformat() if latest.fetched_at else None,
         }
 
-    def fetch_disclosure_list(
+    def fetch_business_overview(
         self,
-        stock_code: str,
-        start_date: str | None = None,
-        end_date: str | None = None,
-        pblntf_ty: str = ""  # 공시유형: A=정기공시, B=주요사항, ...
-    ) -> pd.DataFrame:
+        corp: str,
+        year: int | None = None,
+        max_length: int = 5000
+    ) -> str | None:
         """
-        공시 목록 조회
+        사업보고서에서 '사업의 개요' 섹션 조회
 
         Args:
-            stock_code: 종목코드
-            start_date: 시작일 (YYYYMMDD)
-            end_date: 종료일 (YYYYMMDD)
-            pblntf_ty: 공시유형 필터
+            corp: 종목코드 또는 회사명
+            year: 사업연도 (None이면 최신)
+            max_length: 최대 텍스트 길이
 
         Returns:
-            DataFrame with 공시 목록
+            사업개요 텍스트 또는 None
         """
-        if not start_date or not end_date:
-            start_date, end_date = self.get_date_range(365)  # 최근 1년
+        if not self._dart:
+            return None
+
+        # 캐시 확인
+        cache_key = self._get_cache_key("business_overview", corp, year or "latest")
+        cached = self._get_from_cache(cache_key)
+        if cached:
+            return cached.get("text")
 
         try:
-            data = self._request("list.json", {
-                "corp_code": stock_code,
-                "bgn_de": start_date,
-                "end_de": end_date,
-                "pblntf_ty": pblntf_ty,
-                "page_count": "100",
-            })
+            import requests
+            from bs4 import BeautifulSoup
 
-            if not data.get("list"):
-                return pd.DataFrame()
+            # 사업보고서 목록 조회
+            if year:
+                start_date = f"{year}-01-01"
+                end_date = f"{year}-12-31"
+            else:
+                from datetime import datetime
+                current_year = datetime.now().year
+                start_date = f"{current_year - 2}-01-01"
+                end_date = f"{current_year}-12-31"
 
-            return pd.DataFrame(data["list"])
+            reports = self._dart.list(corp, start=start_date, end=end_date, kind='A')
 
-        except Exception as e:
-            self.logger.error(f"공시 목록 조회 실패 [{stock_code}]: {e}")
-            return pd.DataFrame()
+            if reports is None or len(reports) == 0:
+                self.logger.debug(f"사업보고서 없음: {corp}")
+                return None
 
-    def fetch_business_report(self, stock_code: str, year: int) -> str:
-        """
-        사업보고서 '사업의 내용' 텍스트 조회
+            # 사업보고서 필터링
+            annual = reports[reports['report_nm'].str.contains('사업보고서', na=False)]
+            if len(annual) == 0:
+                self.logger.debug(f"사업보고서 없음: {corp}")
+                return None
 
-        Args:
-            stock_code: 종목코드
-            year: 사업연도
+            rcept_no = annual.iloc[0]['rcept_no']
 
-        Returns:
-            사업의 내용 텍스트 (LLM 분석용)
-        """
-        # 사업보고서 공시 검색
-        df = self.fetch_disclosure_list(
-            stock_code,
-            start_date=f"{year}0101",
-            end_date=f"{year}1231",
-            pblntf_ty="A"  # 정기공시
-        )
+            # 문서 목차 조회
+            subdocs = self._dart.sub_docs(rcept_no)
+            if subdocs is None or len(subdocs) == 0:
+                return None
 
-        if df.empty:
-            # 전년도 사업보고서도 시도
-            df = self.fetch_disclosure_list(
-                stock_code,
-                start_date=f"{year-1}0101",
-                end_date=f"{year-1}1231",
-                pblntf_ty="A"
-            )
+            # '사업의 개요' 섹션 찾기
+            biz_overview = subdocs[subdocs['title'].str.contains('사업의 개요', na=False)]
+            if len(biz_overview) == 0:
+                # 대체: 'II. 사업의 내용' 섹션
+                biz_overview = subdocs[subdocs['title'].str.contains('사업의 내용', na=False)]
 
-        if df.empty:
-            return ""
+            if len(biz_overview) == 0:
+                self.logger.debug(f"사업개요 섹션 없음: {corp}")
+                return None
 
-        # '사업보고서' 필터
-        annual_reports = df[df["report_nm"].str.contains("사업보고서", na=False)]
-        if annual_reports.empty:
-            return ""
+            url = biz_overview.iloc[0]['url']
 
-        # 최신 사업보고서의 접수번호
-        rcept_no = annual_reports.iloc[0]["rcept_no"]
-        corp_cls = annual_reports.iloc[0].get("corp_cls", "")
+            # HTML 내용 가져오기
+            resp = requests.get(url, timeout=10)
+            resp.encoding = 'utf-8'
+            soup = BeautifulSoup(resp.text, 'html.parser')
 
-        try:
-            # 문서 상세 조회 (사업의 내용 API)
-            doc_data = self._request("document.json", {
-                "rcept_no": rcept_no,
-            })
+            # 텍스트 추출 (HTML 태그 제거)
+            text = soup.get_text(separator=' ', strip=True)
 
-            # DART API document.json은 문서 목록만 반환
-            # 실제 텍스트 추출은 document.xml API 사용 필요
-            # 여기서는 회사 개요 API로 대체
+            # 길이 제한
+            if len(text) > max_length:
+                text = text[:max_length] + "..."
 
-            company_data = self._fetch_company_overview(stock_code)
-            if company_data:
-                return company_data
+            # 캐시 저장
+            self._save_to_cache(cache_key, {"text": text})
+
+            self.logger.debug(f"사업개요 조회 성공: {corp} ({len(text)}자)")
+            return text
 
         except Exception as e:
-            self.logger.debug(f"문서 상세 조회 실패: {e}")
-
-        # 폴백: 주요 사항 보고서 텍스트 조합
-        return self._build_business_summary(stock_code, year)
-
-    def _fetch_company_overview(self, stock_code: str) -> str:
-        """
-        회사 개요 조회 (사업의 내용 대체)
-        """
-        try:
-            data = self._request("company.json", {
-                "corp_code": stock_code,
-            })
-
-            if data.get("status") != "000":
-                return ""
-
-            # 회사 정보에서 주요 내용 추출
-            parts = []
-
-            if data.get("induty_code"):
-                parts.append(f"업종코드: {data.get('induty_code')}")
-
-            if data.get("est_dt"):
-                parts.append(f"설립일: {data.get('est_dt')}")
-
-            if data.get("phn_no"):
-                parts.append(f"대표전화: {data.get('phn_no')}")
-
-            # 회사 기본 정보는 섹터 분류에 도움이 됨
-            return " / ".join(parts)
-
-        except Exception as e:
-            self.logger.debug(f"회사 개요 조회 실패: {e}")
-            return ""
-
-    def _build_business_summary(self, stock_code: str, year: int) -> str:
-        """
-        재무제표에서 사업 내용 요약 생성
-        """
-        try:
-            fin_data = self.fetch_financial_summary(stock_code, year, ReportType.ANNUAL)
-
-            if not fin_data:
-                return ""
-
-            parts = [f"종목명: {fin_data.stock_name}"]
-
-            if fin_data.revenue > 0:
-                parts.append(f"매출액: {fin_data.revenue / 100000000:.0f}억원")
-
-            if fin_data.operating_profit != 0:
-                parts.append(f"영업이익: {fin_data.operating_profit / 100000000:.0f}억원")
-
-            if fin_data.rd_expense > 0:
-                parts.append(f"R&D비용: {fin_data.rd_expense / 100000000:.0f}억원")
-
-            return " / ".join(parts)
-
-        except Exception as e:
-            self.logger.debug(f"사업 요약 생성 실패: {e}")
-            return ""
+            self.logger.warning(f"사업개요 조회 실패 [{corp}]: {e}")
+            return None
 
     def close(self):
-        """세션 종료"""
-        self.session.close()
+        """리소스 정리"""
+        pass

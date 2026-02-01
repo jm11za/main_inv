@@ -320,6 +320,10 @@ class NaverThemeCrawler(BaseDataFetcher):
                     stock_code = href.split("code=")[-1].split("&")[0]
                     stock_name = link.get_text(strip=True)
 
+                    # 종목 코드 유효성 검사 (6자리 숫자만 허용)
+                    if not stock_code.isdigit() or len(stock_code) != 6:
+                        continue
+
                     # 현재가
                     price_text = cols[1].get_text(strip=True).replace(",", "")
                     try:

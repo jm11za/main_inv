@@ -121,7 +121,7 @@ class StageRunner:
         from src.ingest import NaverThemeCrawler, ThemeService
 
         def execute():
-            crawler = NaverThemeCrawler(min_delay=0.3, max_delay=0.5)
+            crawler = NaverThemeCrawler(min_delay=1.0, max_delay=2.0)
             themes = []
             all_stocks = {}
 
@@ -220,32 +220,58 @@ class StageRunner:
         def execute():
             client = DartApiClient()
             results = {}
-            failed = []
+            failed = []  # (code, name, reason) 튜플 리스트
+            excluded = []  # 재무제표 없는 종목 (SPAC 등) - 파이프라인에서 제외
 
             if verbose:
                 print(f"\n  [1-3a] 재무 데이터 수집 ({len(stock_codes)}개 종목)...")
 
+            import time
+            DART_DELAY = 2.0  # DART API 딜레이 (2초)
+
             for i, code in enumerate(stock_codes):
+                name = stock_names.get(code, code) if stock_names else code
+
+                # DART API 딜레이 (Rate Limit 방지)
+                if i > 0:
+                    time.sleep(DART_DELAY)
+
                 try:
                     data = client.get_comprehensive_financials(code, year)
                     if data.get("has_data"):
                         results[code] = data
                     else:
-                        failed.append(code)
-                except Exception:
-                    failed.append(code)
+                        # 데이터 없음 - SPAC/신규상장 등으로 간주하여 제외
+                        reason = f"재무제표 없음 ({year}~{year-3}년)"
+                        excluded.append(code)
+                        self.logger.warning(f"[DART] {name}({code}): {reason} → 분석 제외")
+                except Exception as e:
+                    # API 오류 - 로깅 후 실패 목록에 추가
+                    reason = str(e)
+                    failed.append((code, name, reason))
+                    self.logger.error(f"[DART] {name}({code}): API 오류 - {reason}")
 
                 if verbose:
-                    name = stock_names.get(code, code)[:10] if stock_names else code
-                    print_progress(i + 1, len(stock_codes), suffix=f"{name}")
+                    display_name = name[:10] if len(name) > 10 else name
+                    print_progress(i + 1, len(stock_codes), suffix=f"{display_name}")
 
             if verbose:
-                print(f"  ✓ 재무 {len(results)}개 수집 완료 (실패: {len(failed)}개)\n")
+                print(f"  ✓ 재무 {len(results)}개 수집 완료 (제외: {len(excluded)}개, 오류: {len(failed)}개)\n")
+
+            # 오류가 있으면 상세 로그 출력
+            if failed:
+                self.logger.error(f"[DART] 재무 조회 실패 종목 ({len(failed)}개):")
+                for code, name, reason in failed:
+                    self.logger.error(f"  - {name}({code}): {reason}")
+
+            if excluded:
+                self.logger.info(f"[DART] 재무제표 없어 제외된 종목 ({len(excluded)}개): {excluded}")
 
             return {
                 "stock_count": len(results),
                 "financial_data": results,
-                "failed": failed,
+                "failed": [f[0] for f in failed],  # 오류 종목 코드만
+                "excluded": excluded,  # 제외 종목
             }
 
         return self._run_stage("Ingest:Financials", execute)
@@ -307,19 +333,35 @@ class StageRunner:
     def run_ingest_news(
         self,
         stock_codes: list[str],
-        max_articles: int = 10
+        max_articles: int = 10,
+        verbose: bool = True
     ) -> StageResult:
         """뉴스 데이터 수집"""
         from src.ingest import NewsCrawler
+        import time
 
         def execute():
-            crawler = NewsCrawler(max_articles=max_articles)
+            NEWS_DELAY = 1.5  # 뉴스 크롤링 딜레이 (1.5초)
+            crawler = NewsCrawler(max_articles=max_articles, delay_seconds=NEWS_DELAY)
             results = {}
 
-            for code in stock_codes:
+            if verbose:
+                print(f"\n  [1-4] 뉴스 수집 ({len(stock_codes)}개 종목)...")
+
+            for i, code in enumerate(stock_codes):
+                # 뉴스 크롤링 딜레이
+                if i > 0:
+                    time.sleep(NEWS_DELAY)
+
                 articles = crawler.fetch_stock_news(code)
                 if articles:
                     results[code] = articles
+
+                if verbose:
+                    print_progress(i + 1, len(stock_codes), suffix=f"{code}")
+
+            if verbose:
+                print(f"  ✓ 뉴스 {len(results)}개 종목 수집 완료\n")
 
             return {
                 "stock_count": len(results),
@@ -327,6 +369,55 @@ class StageRunner:
             }
 
         return self._run_stage("Ingest:News", execute)
+
+    def run_ingest_business_overview(
+        self,
+        stock_codes: list[str],
+        stock_names: dict[str, str] = None,
+        verbose: bool = True
+    ) -> StageResult:
+        """DART 사업개요 수집"""
+        from src.ingest import DartApiClient
+        import time
+
+        def execute():
+            DART_DELAY = 2.0  # DART API 딜레이 (2초)
+            client = DartApiClient()
+            results = {}
+            failed = []
+
+            if verbose:
+                print(f"\n  [1-5] DART 사업개요 수집 ({len(stock_codes)}개 종목)...")
+
+            for i, code in enumerate(stock_codes):
+                # DART API 딜레이 (Rate Limit 방지)
+                if i > 0:
+                    time.sleep(DART_DELAY)
+
+                try:
+                    overview = client.fetch_business_overview(code)
+                    if overview:
+                        results[code] = overview
+                    else:
+                        failed.append(code)
+                except Exception as e:
+                    failed.append(code)
+                    self.logger.debug(f"사업개요 조회 실패 [{code}]: {e}")
+
+                if verbose:
+                    name = stock_names.get(code, code)[:10] if stock_names else code
+                    print_progress(i + 1, len(stock_codes), suffix=f"{name}")
+
+            if verbose:
+                print(f"  ✓ 사업개요 {len(results)}개 수집 완료 (실패: {len(failed)}개)\n")
+
+            return {
+                "stock_count": len(results),
+                "business_overview": results,
+                "failed": failed,
+            }
+
+        return self._run_stage("Ingest:BusinessOverview", execute)
 
     def run_ingest_community(
         self,

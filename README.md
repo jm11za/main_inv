@@ -2,6 +2,8 @@
 
 테마 기반 종목 발굴 및 투자 판정 시스템
 
+> **v3.0 (2026-02-01)**: SectorCategory Enum 제거 → 네이버 테마명 문자열 직접 사용, N:M 종목-테마 관계 지원
+
 ## 목차
 - [개요](#개요)
 - [파이프라인 흐름도](#파이프라인-흐름도)
@@ -29,63 +31,75 @@
 
 ---
 
-## 파이프라인 흐름도
+## 파이프라인 흐름도 (v3.0)
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│  Layer 1: INGEST (데이터 수집)                                            │
+│  Stage 0: 데이터 수집 (Data Collect)                                      │
 │  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐        │
-│  │ 1-1     │→│ 1-1b    │→│ 1-2     │→│ 1-3     │→│ 1-4     │        │
-│  │ 테마    │  │ 종목    │  │ 주가    │  │ 재무    │  │ 뉴스    │        │
+│  │ 0-1     │  │ 0-2     │  │ 0-3     │  │ 0-4     │  │ 0-5     │        │
+│  │ 테마    │  │ 주가    │  │ 재무    │  │ 수급    │  │ 뉴스    │        │
 │  └─────────┘  └─────────┘  └─────────┘  └─────────┘  └─────────┘        │
 └──────────────────────────────┬───────────────────────────────────────────┘
                                ▼
 ┌──────────────────────────────────────────────────────────────────────────┐
-│  Layer 2: PROCESSING (데이터 처리)                                        │
-│  ┌─────────────────┐     ┌─────────────────────────────────────┐        │
-│  │ 2-1 전처리       │ →  │ 2-2 섹터 라벨링 (LLM)                 │        │
-│  │ HTML 제거/정제   │     │ 메인섹터 + 보조섹터 + TYPE_A/B 결정   │        │
-│  └─────────────────┘     └─────────────────────────────────────┘        │
+│  Stage 1: 섹터 분류 (StockThemeAnalyzer)                                  │
+│  ┌─────────────────────────────────────────────────────────────────┐    │
+│  │  테마-종목 매핑 구축 (N:M 관계)                                     │    │
+│  │  • theme_stocks_map: {테마명 → [종목코드, ...]}                     │    │
+│  │  • stock_themes_map: {종목코드 → [테마명, ...]}                     │    │
+│  │  • LLM 사업/뉴스 요약 생성                                          │    │
+│  └─────────────────────────────────────────────────────────────────┘    │
 └──────────────────────────────┬───────────────────────────────────────────┘
                                ▼
 ┌──────────────────────────────────────────────────────────────────────────┐
-│  Layer 3: ANALYSIS (섹터 분석)                                            │
+│  Stage 2: 섹터 타입 분류 (SectorTypeAnalyzer)                             │
+│  ┌─────────────────────────────────────────────────────────────────┐    │
+│  │  키워드 기반 + LLM 분류 → Type A(실적형) / Type B(성장형)           │    │
+│  │  Output: {테마명: SectorType} (예: {"반도체": TYPE_B})              │    │
+│  └─────────────────────────────────────────────────────────────────┘    │
+└──────────────────────────────┬───────────────────────────────────────────┘
+                               ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│  Stage 3: 섹터 우선순위 (SectorPrioritizer)                               │
 │  ┌───────────┐  ┌───────────┐  ┌───────────┐     ┌───────────┐         │
-│  │ S_Flow    │ +│ S_Breadth │ +│ S_Trend   │  →  │ Tier 분류  │         │
-│  │ 수급 강도  │  │ 결속력    │  │ 추세 점수  │     │ 1/2/3/Skip│         │
+│  │ S_Flow    │ +│ S_Breadth │ +│ S_Trend   │  →  │ 테마 순위  │         │
+│  │ 수급 강도  │  │ 결속력    │  │ 추세 점수  │     │ + LLM 전망 │         │
 │  └───────────┘  └───────────┘  └───────────┘     └───────────┘         │
 └──────────────────────────────┬───────────────────────────────────────────┘
                                ▼
 ┌──────────────────────────────────────────────────────────────────────────┐
-│  Layer 4: FILTERING (필터링)                                              │
+│  Stage 4: 종목 선정 (CandidateSelector)                                   │
 │  ┌─────────────────────────┐     ┌─────────────────────────┐           │
 │  │ Track A (Hard Filter)   │ OR │ Track B (Soft Filter)    │           │
-│  │ 실적형: PBR<3, 영업익>0  │     │ 성장형: 자본잠식<50%     │           │
+│  │ + 점수화 (재무50:기술50) │     │ + 점수화 (재무20:기술80) │           │
 │  └─────────────────────────┘     └─────────────────────────┘           │
+│  → 테마당 상위 N개, 전체 최대 M개 선정                                    │
 └──────────────────────────────┬───────────────────────────────────────────┘
                                ▼
 ┌──────────────────────────────────────────────────────────────────────────┐
-│  Layer 5: SCORING (점수화)                                                │
-│  ┌──────────────────────────────────────────────────────────┐           │
-│  │ Track A: 재무(50%) + 기술(50%)                            │           │
-│  │ Track B: 재무(20%) + 기술(80%)                            │           │
-│  └──────────────────────────────────────────────────────────┘           │
-└──────────────────────────────┬───────────────────────────────────────────┘
-                               ▼
-┌──────────────────────────────────────────────────────────────────────────┐
-│  Layer 6: DECISION (최종 판정)                                            │
+│  Stage 5: 최종 검증 (MaterialAnalyzer + SentimentAnalyzer)                │
 │  ┌─────────────┐     ┌─────────────┐     ┌─────────────────────┐       │
-│  │ Skeptic     │  +  │ Sentiment   │  →  │ Decision Matrix      │       │
+│  │ Skeptic     │  +  │ Sentiment   │  →  │ DecisionEngine       │       │
 │  │ 재료 분석    │     │ 심리 분석    │     │ STRONG_BUY/BUY/...   │       │
+│  │ (Claude)    │     │ (Claude)    │     │                     │       │
 │  └─────────────┘     └─────────────┘     └─────────────────────┘       │
+└──────────────────────────────┬───────────────────────────────────────────┘
+                               ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│  Stage 6: 아웃풋 (ReportGenerator + TelegramNotifier)                     │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐         │
+│  │ StageSaver      │  │ ReportGenerator │  │ TelegramNotifier│         │
+│  │ 단계별 JSON 저장 │  │ 리포트 생성     │  │ 텔레그램 발송    │         │
+│  └─────────────────┘  └─────────────────┘  └─────────────────┘         │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 각 단계별 상세
+## 각 단계별 상세 (v3.0)
 
-### Layer 1: 데이터 수집 (Ingest)
+### Stage 0: 데이터 수집 (Data Collect)
 
 #### 1-1. 테마 목록 크롤링
 
@@ -156,56 +170,82 @@
 
 ---
 
-### Layer 2: 데이터 처리 (Processing)
-
-#### 2-1. 전처리
+### Stage 1: 섹터 분류 (StockThemeAnalyzer)
 
 | 항목 | 내용 |
 |------|------|
-| **파일** | `src/processing/preprocessor.py` |
-| **처리** | HTML 태그 제거, 특수문자 정제, 중복 제거 |
+| **파일** | `src/sector/classifier.py` |
+| **클래스** | `StockThemeAnalyzer` |
 
-#### 2-2. 섹터 라벨링 (핵심)
+**역할:** 종목별 섹터(테마) 할당 + 부가정보(DART/뉴스 LLM 요약) 생성
 
-| 항목 | 내용 |
-|------|------|
-| **파일** | `src/processing/sector_labeler.py` |
-| **Input** | theme_names, dart_business_text, news_headlines |
-| **Output** | `SectorLabel` |
-
-**섹터 라벨링 로직 (수정됨):**
+**INPUT:**
 ```
-1. primary_sector: 네이버 테마에서 직접 결정 (투자자 관심 기준)
-   - 테마 키워드 매칭으로 섹터 분류
-   - 종목명에서 힌트 추출 (보조)
-
-2. secondary_sectors: DART + 뉴스를 LLM으로 분석하여 결정 (실제 사업 기준)
-   - DART 사업보고서에서 사업 키워드 추출
-   - 뉴스 헤드라인에서 현재 이슈 추출
-   - LLM이 primary 제외한 관련 섹터 2개까지 추출
-
-3. is_growth_sector: 성장 섹터 여부 → TYPE_A/B 결정
+- themes: 네이버 테마 목록 (ThemeInfo[])
+- theme_stocks: 테마-종목 매핑 (ThemeStock[])
+- stock_codes: 분석 대상 종목코드
+- stock_names: {종목코드: 종목명}
+- dart_data: {종목코드: DART 사업개요 텍스트}
+- news_data: {종목코드: [뉴스 기사]}
 ```
 
-**Output 구조:**
+**OUTPUT:**
+```
+- theme_stocks_map: {테마명: [종목코드,...]}
+- stock_themes_map: {종목코드: [테마명,...]}  ← N:M 관계
+- stocks_data: StockAnalysisData[]
+```
+
+**StockAnalysisData 구조:**
 ```python
-SectorLabel:
-  - primary_sector: str       # 주요 섹터 (네이버 테마 기반)
-  - secondary_sectors: list   # 보조 섹터 (DART/뉴스 LLM 분석)
-  - theme_tags: list          # 원본 테마 태그
-  - business_keywords: list   # DART에서 추출한 키워드
-  - current_issues: list      # 뉴스에서 추출한 현재 이슈
-  - is_growth_sector: bool    # TYPE_B 여부
-  - confidence: float
+@dataclass
+class StockAnalysisData:
+    stock_code: str
+    stock_name: str
+
+    # 섹터 (N개 가능 - 1종목이 여러 테마에 속할 수 있음)
+    theme_tags: list[str]     # ["반도체", "AI", "HBM"]
+
+    # 부가정보 (LLM 요약)
+    business_summary: str     # DART 사업개요 요약 (3-5문장)
+    news_summary: str         # 뉴스 동향 요약 (3-5문장)
+
+    # 메타데이터
+    data_sources: list[str]   # ["theme", "dart", "news"]
 ```
 
-**성장 섹터 (TYPE_B) 목록:**
-- 반도체, 2차전지, 바이오/제약, IT/소프트웨어
-- 헬스케어, 방산, 에너지
+**핵심 원칙:**
+- 섹터 = 네이버 테마명 그대로 사용 (Enum 없음)
+- 1종목 N섹터 관계 (N:M) 지원
+- 부가정보 = DART 사업개요 + 뉴스를 LLM으로 요약
 
 ---
 
-### Layer 3: 섹터 분석 (Analysis)
+### Stage 2: 섹터 타입 분류 (SectorTypeAnalyzer)
+
+| 항목 | 내용 |
+|------|------|
+| **파일** | `src/sector/type_analyzer.py` |
+| **클래스** | `SectorTypeAnalyzer` |
+| **Input** | 테마명 문자열 리스트 (예: ["반도체", "은행", "바이오"]) |
+| **Output** | `{테마명: SectorType}` 매핑 |
+
+**분류 로직:**
+1. 키워드 매칭 (우선)
+   - TYPE_B_KEYWORDS: 반도체, HBM, AI, 2차전지, 바이오, 신약, 로봇 등
+   - TYPE_A_KEYWORDS: 은행, 건설, 철강, 자동차, 음식료 등
+2. LLM 분류 (키워드 미매칭 시)
+
+---
+
+### Stage 3: 섹터 우선순위 (SectorPrioritizer)
+
+| 항목 | 내용 |
+|------|------|
+| **파일** | `src/sector/prioritizer.py` |
+| **클래스** | `SectorPrioritizer`, `ThemeMetrics` |
+| **Input** | `ThemeMetrics[]` (테마별 지표) |
+| **Output** | 상위 N개 테마 선정 (점수 + LLM 전망 분석) |
 
 #### 3개 핵심 지표
 
@@ -240,7 +280,20 @@ S_Flow   │    SKIP     │   TIER 3    │  ← 회피
 
 ---
 
-### Layer 4: 필터링 (Filtering)
+### Stage 4: 종목 선정 (CandidateSelector)
+
+| 항목 | 내용 |
+|------|------|
+| **파일** | `src/stock/selector.py` |
+| **클래스** | `CandidateSelector`, `CandidateResult` |
+| **Input** | `stocks_data[]`, `sector_type_map: {테마명: SectorType}` |
+| **Output** | 테마별 상위 N개, 전체 최대 M개 선정 |
+
+**프로세스:**
+1. 테마별 그룹핑 (테마명 문자열 기준)
+2. Track A/B 필터 적용
+3. 점수화 (재무 + 기술)
+4. 테마 내 순위 → 전체 순위
 
 #### Track A (Hard Filter) - 실적형 섹터
 
@@ -262,7 +315,12 @@ S_Flow   │    SKIP     │   TIER 3    │  ← 회피
 
 ---
 
-### Layer 5: 점수화 (Scoring)
+#### 점수화 (StockScorer)
+
+| 항목 | 내용 |
+|------|------|
+| **파일** | `src/stock/scorer.py` |
+| **클래스** | `StockScorer`, `StockScoreResult` |
 
 #### Track별 가중치
 
@@ -293,7 +351,14 @@ S_Flow   │    SKIP     │   TIER 3    │  ← 회피
 
 ---
 
-### Layer 6: 최종 판정 (Decision)
+### Stage 5: 최종 검증 (MaterialAnalyzer + SentimentAnalyzer + DecisionEngine)
+
+| 항목 | 내용 |
+|------|------|
+| **파일** | `src/verify/material_analyzer.py`, `src/verify/sentiment_analyzer.py`, `src/verify/decision_engine.py` |
+| **LLM** | Claude (Cloud) - 정밀 분석 필요 |
+| **Input** | 선정된 종목 + 뉴스 + 커뮤니티 데이터 |
+| **Output** | `STRONG_BUY / BUY / WATCH / AVOID` |
 
 #### Skeptic 분석 (재료 분석)
 
@@ -359,15 +424,57 @@ SentimentAnalysis:
 
 ---
 
+### Stage 6: 아웃풋 (ReportGenerator + TelegramNotifier)
+
+| 항목 | 내용 |
+|------|------|
+| **파일** | `src/output/stage_saver.py`, `src/output/report_generator.py`, `src/output/telegram_notifier.py` |
+
+#### 출력물
+
+| 출력물 | 파일 경로 | 내용 |
+|--------|----------|------|
+| 단계별 결과 | `outputs/stages/{날짜}_0X_*.json` | 각 스테이지 결과 JSON |
+| 일일 리포트 | `outputs/reports/daily/{날짜}_full.json` | 전체 집계 결과 |
+| 텔레그램 메시지 | `outputs/reports/telegram/{날짜}_summary.txt` | 발송용 메시지 |
+
+#### 텔레그램 발송
+
+```python
+from src.output import TelegramNotifier, ReportGenerator
+
+# 리포트 생성
+generator = ReportGenerator()
+report = generator.generate_from_stages(aggregated_data)
+
+# 발송
+notifier = TelegramNotifier()
+notifier.send_report(report)
+```
+
+---
+
 ## 핵심 개념
 
-### 섹터 타입 (TYPE_A vs TYPE_B)
+### 섹터 타입 (TYPE_A vs TYPE_B) - v3.0
 
 | 구분 | TYPE_A (실적형) | TYPE_B (성장형) |
 |------|----------------|----------------|
-| 대상 | 금융, 화학, 철강, 건설 등 | 반도체, 바이오, 2차전지 등 |
+| 대상 | 금융, 화학, 철강, 건설, 자동차 등 | 반도체, 바이오, 2차전지, AI, 로봇 등 |
 | 필터 | Hard Filter (엄격) | Soft Filter (유연) |
 | 가중치 | 재무 50% : 기술 50% | 재무 20% : 기술 80% |
+| 분류 방식 | 테마명 키워드 매칭 + LLM | 테마명 키워드 매칭 + LLM |
+
+**v3.0 변경**: SectorCategory Enum 대신 테마명 문자열로 분류
+```python
+# 예시: sector_type_map
+{
+    "반도체": SectorType.TYPE_B,
+    "2차전지": SectorType.TYPE_B,
+    "은행": SectorType.TYPE_A,
+    "자동차": SectorType.TYPE_A,
+}
+```
 
 ### Tier 시스템
 
@@ -401,7 +508,14 @@ src/
 │
 ├── processing/              # Layer 2: 데이터 처리
 │   ├── preprocessor.py     # 텍스트 전처리
-│   └── sector_labeler.py   # 섹터 라벨링 (LLM)
+│   ├── llm_extractor.py    # LLM 키워드 추출
+│   ├── tag_mapper.py       # 테마-종목 매핑
+│   └── data_transformer.py # 데이터 변환
+│
+├── sector/                  # Layer 3: 섹터/테마 분석 (v3.0)
+│   ├── classifier.py       # ① StockThemeAnalyzer - 테마 데이터셋 구축
+│   ├── type_analyzer.py    # ② SectorTypeAnalyzer - Type A/B 분류
+│   └── prioritizer.py      # ③ SectorPrioritizer - 테마 우선순위
 │
 ├── analysis/                # Layer 3: 섹터 분석
 │   ├── tier_classifier.py  # Tier 분류
@@ -423,11 +537,23 @@ src/
 │       ├── skeptic.py      # 재료 분석
 │       └── sentiment.py    # 심리 분석
 │
+├── stock/                   # Layer 4: 종목 분석 (v3.0)
+│   ├── filter.py           # StockFilter - Track A/B 필터
+│   ├── scorer.py           # StockScorer - 종목 점수화
+│   └── selector.py         # CandidateSelector - 후보 선정
+│
 ├── llm/                     # LLM 클라이언트
-│   └── ollama_client.py    # Ollama 로컬 LLM
+│   ├── ollama_client.py    # Ollama 로컬 LLM
+│   └── claude_client.py    # Claude API 클라이언트
+│
+├── output/                  # Layer 6: 결과 출력
+│   ├── stage_saver.py      # 단계별 결과 저장
+│   ├── report_generator.py # 리포트 생성
+│   └── telegram_notifier.py # 텔레그램 알림
 │
 └── orchestrator/            # 오케스트레이션
     ├── pipeline.py         # 전체 파이프라인
+    ├── pipeline_v2.py      # v3.0 파이프라인
     └── stage_runner.py     # 단계별 실행기
 ```
 
@@ -450,17 +576,24 @@ pip install -r requirements.txt
 ### 실행
 
 ```python
-from src.orchestrator import Pipeline
+# v3.0 파이프라인 사용
+from src.orchestrator.pipeline_v2 import PipelineV2
 
-pipeline = Pipeline()
-result = pipeline.run_full(
-    theme_codes=["AI반도체", "2차전지"],
-    year=2025,
-    max_stocks=100,
-    save_to_db=True
-)
+pipeline = PipelineV2()
+result = pipeline.run_full(verbose=True)
 
-print(f"추천 종목: {len(result.final_recommendations)}개")
+# 결과 확인
+print(f"분석 테마: {len(result.stage_results.get('sector_classify', {}).get('themes', []))}개")
+print(f"선정 종목: {len(result.final_recommendations)}개")
+
+# 텔레그램 발송
+from src.output import TelegramNotifier, ReportGenerator
+
+generator = ReportGenerator()
+report = generator.generate_from_stages(result.to_dict())
+
+notifier = TelegramNotifier()
+notifier.send_report(report)
 ```
 
 ### 테스트
@@ -468,6 +601,29 @@ print(f"추천 종목: {len(result.final_recommendations)}개")
 ```bash
 pytest tests/
 ```
+
+---
+
+## v3.0 변경사항 요약
+
+### 핵심 변경
+- **SectorCategory Enum 제거**: 네이버 테마명 문자열 직접 사용
+- **N:M 관계 지원**: 한 종목이 여러 테마에 소속 가능
+- **모듈 구조 개편**: `sector/` 패키지로 테마 분석 기능 통합
+
+### 변경된 클래스
+| AS-IS | TO-BE | 설명 |
+|-------|-------|------|
+| `SectorLabeler` | `StockThemeAnalyzer` | 테마 데이터셋 구축 |
+| `SectorMetrics` | `ThemeMetrics` | 테마별 지표 (별칭 유지) |
+| `sector: SectorCategory` | `sector: str` | 테마명 문자열 |
+
+### 테스트 커버리지
+- `tests/sector/test_classifier.py`: 31개
+- `tests/sector/test_type_analyzer.py`: 27개
+- `tests/sector/test_prioritizer.py`: 23개
+- `tests/stock/test_selector.py`: 20개
+- `tests/test_output.py`: 37개
 
 ---
 

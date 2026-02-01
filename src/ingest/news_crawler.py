@@ -271,6 +271,99 @@ class NewsCrawler(BaseDataFetcher):
 
         return "\n".join(lines)
 
+    def fetch_news_by_name(
+        self,
+        stock_name: str,
+        stock_code: str = "",
+        max_articles: int = 10
+    ) -> list[NewsArticle]:
+        """
+        종목명으로 네이버 뉴스 검색
+
+        Args:
+            stock_name: 종목명 (예: "마이크로컨텍솔")
+            stock_code: 종목코드 (선택)
+            max_articles: 최대 기사 수
+
+        Returns:
+            NewsArticle 리스트 (최신순)
+        """
+        import urllib.parse
+
+        # 네이버 뉴스 검색 URL (최신순)
+        search_url = "https://search.naver.com/search.naver"
+        query = urllib.parse.quote(stock_name)
+
+        params = {
+            "where": "news",
+            "query": stock_name,
+            "sm": "tab_opt",
+            "sort": "1",  # 최신순
+            "photo": "0",
+            "field": "0",
+            "pd": "0",
+            "ds": "",
+            "de": "",
+        }
+
+        self.logger.debug(f"뉴스 검색 시작: {stock_name}")
+
+        try:
+            response = self.session.get(search_url, params=params, timeout=10)
+            response.raise_for_status()
+            response.encoding = "utf-8"
+
+            soup = BeautifulSoup(response.text, "lxml")
+
+            # 뉴스 리스트 파싱
+            articles = []
+            news_items = soup.select("div.news_area")[:max_articles]
+
+            for item in news_items:
+                # 제목
+                title_tag = item.select_one("a.news_tit")
+                if not title_tag:
+                    continue
+
+                title = title_tag.get_text(strip=True)
+                link = title_tag.get("href", "")
+
+                # 언론사
+                source_tag = item.select_one("a.info.press")
+                source = source_tag.get_text(strip=True) if source_tag else ""
+
+                # 날짜
+                date_tag = item.select_one("span.info")
+                published_at = ""
+                if date_tag:
+                    # 언론사가 아닌 날짜 정보 찾기
+                    info_spans = item.select("span.info")
+                    for span in info_spans:
+                        text = span.get_text(strip=True)
+                        if "전" in text or "." in text:  # "1시간 전", "2025.01.01"
+                            published_at = text
+                            break
+
+                # 요약 (description)
+                desc_tag = item.select_one("div.news_dsc")
+                summary = desc_tag.get_text(strip=True) if desc_tag else ""
+
+                articles.append(NewsArticle(
+                    stock_code=stock_code,
+                    title=title,
+                    link=link,
+                    source=source,
+                    published_at=published_at,
+                    summary=summary,
+                ))
+
+            self.logger.debug(f"[{stock_name}] 뉴스 {len(articles)}건 검색 완료")
+            return articles
+
+        except requests.RequestException as e:
+            self.logger.error(f"뉴스 검색 실패 [{stock_name}]: {e}")
+            return []
+
     def close(self):
         """세션 종료"""
         self.session.close()
