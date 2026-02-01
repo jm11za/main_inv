@@ -333,38 +333,68 @@ class StageRunner:
     def run_ingest_news(
         self,
         stock_codes: list[str],
+        stock_names: dict[str, str] = None,
         max_articles: int = 10,
+        period: str = "1m",
         verbose: bool = True
     ) -> StageResult:
-        """뉴스 데이터 수집"""
-        from src.ingest import NewsCrawler
+        """
+        뉴스 데이터 수집 (NaverNewsSearchCrawler 사용)
+
+        Args:
+            stock_codes: 종목코드 리스트
+            stock_names: {종목코드: 종목명} (필수 - 검색에 사용)
+            max_articles: 종목당 최대 기사 수
+            period: 기간 필터 ("1d", "1w", "1m", "6m", "1y")
+            verbose: 진행 상황 출력 여부
+        """
+        from src.ingest.naver_news_search import NaverNewsSearchCrawler
         import time
 
         def execute():
-            NEWS_DELAY = 1.5  # 뉴스 크롤링 딜레이 (1.5초)
-            crawler = NewsCrawler(max_articles=max_articles, delay_seconds=NEWS_DELAY)
+            NEWS_DELAY = 4.0  # 뉴스 크롤링 딜레이 (4초 - 차단 방지)
+            crawler = NaverNewsSearchCrawler(delay_seconds=NEWS_DELAY)
             results = {}
 
             if verbose:
-                print(f"\n  [1-4] 뉴스 수집 ({len(stock_codes)}개 종목)...")
+                print(f"\n  [1-4] 뉴스 수집 ({len(stock_codes)}개 종목, 간격: {NEWS_DELAY}초)...")
+
+            stock_names_map = stock_names or {}
 
             for i, code in enumerate(stock_codes):
                 # 뉴스 크롤링 딜레이
                 if i > 0:
                     time.sleep(NEWS_DELAY)
 
-                articles = crawler.fetch_stock_news(code)
+                # 종목명으로 검색 (코드가 아님)
+                name = stock_names_map.get(code, "")
+                if not name:
+                    self.logger.debug(f"종목명 없음, 스킵: {code}")
+                    continue
+
+                articles = crawler.search(
+                    query=name,
+                    period=period,
+                    sort="recent",
+                    max_results=max_articles
+                )
+
                 if articles:
                     results[code] = articles
 
                 if verbose:
-                    print_progress(i + 1, len(stock_codes), suffix=f"{code}")
+                    display_name = name[:8] if name else code
+                    print_progress(i + 1, len(stock_codes), suffix=f"{display_name} ({len(articles)}건)")
+
+            crawler.close()
 
             if verbose:
-                print(f"  ✓ 뉴스 {len(results)}개 종목 수집 완료\n")
+                total_articles = sum(len(v) for v in results.values())
+                print(f"  ✓ 뉴스 {len(results)}개 종목, 총 {total_articles}건 수집 완료\n")
 
             return {
                 "stock_count": len(results),
+                "total_articles": sum(len(v) for v in results.values()),
                 "news_data": results,
             }
 

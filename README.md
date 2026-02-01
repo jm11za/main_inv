@@ -151,13 +151,23 @@
 | **메서드** | `fetch_stock_supply_demand()`, `fetch_stock_fundamental()` |
 | **Output** | 외인/기관 순매수, 시총, PBR, PER |
 
-#### 1-4. 뉴스 크롤링
+#### 1-4. 뉴스 크롤링 (v3.1 개선)
 
 | 항목 | 내용 |
 |------|------|
-| **파일** | `src/ingest/news_crawler.py` |
-| **데이터 소스** | 네이버 금융 뉴스 탭 |
-| **Output** | `List[NewsArticle]` - title, source, published_at |
+| **파일** | `src/ingest/naver_news_search.py` |
+| **클래스** | `NaverNewsSearchCrawler` |
+| **데이터 소스** | 네이버 통합검색 뉴스 탭 (종목명 기반 검색) |
+| **기간 필터** | 1일, 1주, 1개월, 6개월, 1년 |
+| **Output** | `List[NaverNewsArticle]` - title, summary, press, published_at, link |
+| **딜레이** | 4초 (API 차단 방지) |
+| **LLM 프롬프트** | 관련성 낮은 기사 자동 필터링 지시 포함 |
+
+**주요 특징:**
+- 종목명 기반 검색 (종목코드 아님)
+- 헤드라인 + 요약(미리보기) 동시 수집
+- 언론사, 발행일 자동 추출
+- 기간별 필터링 지원
 
 #### 1-5. 토론방 크롤링 (NEW - Sentiment B)
 
@@ -503,7 +513,8 @@ src/
 │   ├── naver_theme.py      # 테마 크롤링
 │   ├── price_fetcher.py    # 주가/수급 (pykrx)
 │   ├── dart_client.py      # DART API
-│   ├── news_crawler.py     # 뉴스 크롤링
+│   ├── news_crawler.py     # 뉴스 크롤링 (레거시)
+│   ├── naver_news_search.py # 뉴스 검색 크롤러 (v3.1 - 종목명 기반, 요약 포함)
 │   └── discussion_crawler.py # 토론방 크롤링 (Sentiment B)
 │
 ├── processing/              # Layer 2: 데이터 처리

@@ -186,7 +186,7 @@
 | 모듈명 | 데이터 소스 | 수집 주기 | Output | 재사용성 |
 |--------|-------------|-----------|--------|----------|
 | `NaverThemeCrawler` | 네이버 금융 테마 | 일 1회 | 테마명, 소속 종목 | 네이버 다른 페이지에도 활용 |
-| `NewsCrawler` | 네이버 뉴스 | 일 1회 | 종목별 최근 1개월 헤드라인 | 범용 뉴스 크롤러로 확장 |
+| `NaverNewsSearchCrawler` ★ | 네이버 통합검색 뉴스 | 일 1회 | 헤드라인 + 요약 + 언론사 + 발행일 | 종목명 기반 검색, 기간 필터 지원 |
 | `DartApiClient` | DART OpenAPI | 분기 1회 | 분기보고서 '사업의 내용' | DART 전 API 커버 가능 |
 | `PriceDataFetcher` | KRX/증권사 API | 일 1회 | OHLCV, 거래대금, 수급 | API 교체 가능 설계 |
 
@@ -789,7 +789,8 @@ swing_trading_system/
 │   ├── ingest/                      # Layer 1
 │   │   ├── base.py
 │   │   ├── naver_theme.py
-│   │   ├── news_crawler.py
+│   │   ├── news_crawler.py          # 레거시
+│   │   ├── naver_news_search.py     # ★ v3.1 뉴스 검색 (종목명 기반, 요약 포함)
 │   │   ├── dart_client.py
 │   │   └── price_fetcher.py
 │   │
@@ -1272,7 +1273,8 @@ class CandidateResult:
 │  • 0-2: 주가 수집 (PriceFetcher)                                        │
 │  • 0-3: 재무 수집 (DartClient)                                          │
 │  • 0-4: 수급/펀더멘탈 수집 (pykrx)                                       │
-│  • 0-5: 뉴스 수집 (NewsCrawler)                                         │
+│  • 0-5: 뉴스 수집 (NaverNewsSearchCrawler) ★ v3.1                       │
+│         - 종목명 기반 검색, 요약 포함, 4초 딜레이                         │
 │  • 0-6: DART 사업개요 수집                                               │
 └─────────────────────────────────────────────────────────────────────────┘
                                     │

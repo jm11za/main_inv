@@ -364,7 +364,15 @@ class PipelineV2:
 
             all_themes = theme_result.data.get("themes", [])
             themes = all_themes[:max_themes]  # max_themes 제한 적용
-            stock_names = theme_result.data.get("stock_names", {})
+
+            # 선택된 테마에 속한 종목만 필터링 (버그 수정)
+            all_stock_names = theme_result.data.get("stock_names", {})
+            stock_names = {}
+            for theme in themes:
+                if theme.stocks:
+                    for stock in theme.stocks:
+                        stock_names[stock.stock_code] = stock.stock_name
+
             stock_codes = list(stock_names.keys())[:max_stocks]
 
             self._cache["themes"] = themes
@@ -384,8 +392,14 @@ class PipelineV2:
             self._cache["fundamental_data"] = supply_result.data.get("fundamental_data", {})
             self._cache["supply_data"] = supply_result.data.get("supply_data", {})
 
-            # 0-5. 뉴스 수집
-            news_result = runner.run_ingest_news(stock_codes)
+            # 0-5. 뉴스 수집 (NaverNewsSearchCrawler - 종목명 기반 검색)
+            news_result = runner.run_ingest_news(
+                stock_codes=stock_codes,
+                stock_names=stock_names,
+                max_articles=10,
+                period="1m",
+                verbose=verbose
+            )
             self._cache["news_data"] = news_result.data.get("news_data", {})
 
             # 0-6. DART 사업개요 수집 (보조 섹터 분류용)
