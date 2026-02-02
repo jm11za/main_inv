@@ -196,21 +196,46 @@ class SectorTypeAnalyzer:
         self.logger.info(f"테마 Type 분류 완료: {len(results)}개")
         return results
 
-    def _analyze_by_keywords(self, theme_name: str) -> SectorTypeResult:
-        """키워드 기반 분류"""
+    def _match_keywords(self, theme_name: str, keywords: list[str]) -> list[str]:
+        """
+        키워드 매칭 (단어 단위, 부분 문자열 오매칭 방지)
+
+        규칙:
+        1. 짧은 키워드(2자 이하): 토큰 완전 일치만 허용
+        2. 긴 키워드(3자 이상): 부분 문자열 매칭 허용
+
+        예시:
+        - "동" → "부동산"에 매칭 안됨 (2자 이하, 토큰 불일치)
+        - "부동산" → "부동산 보유 자산주"에 매칭됨 (3자 이상, 부분 문자열)
+        - "반도체" → "반도체 장비"에 매칭됨 (3자 이상, 부분 문자열)
+        """
+        import re
+
+        # 테마명을 토큰으로 분리 (공백, 괄호, 슬래시, 하이픈 등)
+        theme_tokens = set(re.split(r'[\s/\(\)\[\]\-]+', theme_name.lower()))
+        # 테마명 전체 (소문자)
         theme_lower = theme_name.lower()
 
+        matches = []
+        for kw in keywords:
+            kw_lower = kw.lower()
+
+            # 1. 토큰 완전 일치 (모든 키워드)
+            if kw_lower in theme_tokens:
+                matches.append(kw)
+            # 2. 긴 키워드(3자 이상)는 부분 문자열 매칭 허용
+            elif len(kw) >= 3 and kw_lower in theme_lower:
+                matches.append(kw)
+
+        return matches
+
+    def _analyze_by_keywords(self, theme_name: str) -> SectorTypeResult:
+        """키워드 기반 분류"""
         # Type B 키워드 매칭
-        type_b_matches = [
-            kw for kw in self.TYPE_B_KEYWORDS
-            if kw.lower() in theme_lower or theme_lower in kw.lower()
-        ]
+        type_b_matches = self._match_keywords(theme_name, self.TYPE_B_KEYWORDS)
 
         # Type A 키워드 매칭
-        type_a_matches = [
-            kw for kw in self.TYPE_A_KEYWORDS
-            if kw.lower() in theme_lower or theme_lower in kw.lower()
-        ]
+        type_a_matches = self._match_keywords(theme_name, self.TYPE_A_KEYWORDS)
 
         # 판정
         if type_b_matches and not type_a_matches:

@@ -343,6 +343,7 @@ class PipelineV2:
         max_stocks: int,
         year: int,
         verbose: bool,
+        stocks_per_theme: int | None = None,
     ) -> StageResult:
         """Stage 0: 데이터 수집"""
         from src.orchestrator.stage_runner import StageRunner
@@ -366,12 +367,21 @@ class PipelineV2:
             themes = all_themes[:max_themes]  # max_themes 제한 적용
 
             # 선택된 테마에 속한 종목만 필터링 (버그 수정)
+            # stocks_per_theme 옵션: 테마당 종목 수 제한
             all_stock_names = theme_result.data.get("stock_names", {})
             stock_names = {}
             for theme in themes:
                 if theme.stocks:
+                    theme_stock_count = 0
                     for stock in theme.stocks:
+                        # 이미 다른 테마에서 추가된 종목은 스킵 (중복 방지)
+                        if stock.stock_code in stock_names:
+                            continue
                         stock_names[stock.stock_code] = stock.stock_name
+                        theme_stock_count += 1
+                        # 테마당 종목 수 제한
+                        if stocks_per_theme and theme_stock_count >= stocks_per_theme:
+                            break
 
             stock_codes = list(stock_names.keys())[:max_stocks]
 
@@ -982,13 +992,17 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Pipeline v2.0 테스트 실행")
     parser.add_argument("--themes", type=int, default=6, help="최대 테마 수 (기본: 6)")
     parser.add_argument("--stocks", type=int, default=30, help="최대 종목 수 (기본: 30)")
+    parser.add_argument("--stocks-per-theme", type=int, default=None, help="테마당 최대 종목 수 (기본: 제한 없음)")
     parser.add_argument("--skip-preflight", action="store_true", help="Preflight 건너뛰기")
-    parser.add_argument("--stage", type=str, default="1", help="실행할 최대 스테이지 (0, 1, all)")
+    parser.add_argument("--stage", type=str, default="1", help="실행할 최대 스테이지 (0, 1, 2, all)")
     parser.add_argument("--debug", action="store_true", help="상세 데이터 흐름 출력 (입력→LLM→출력)")
     args = parser.parse_args()
 
     print("=" * 70)
-    print(f"Pipeline v2.0 테스트 (테마: {args.themes}개, 종목: {args.stocks}개)")
+    stocks_info = f"종목: {args.stocks}개"
+    if args.stocks_per_theme:
+        stocks_info = f"테마당 {args.stocks_per_theme}개 종목"
+    print(f"Pipeline v2.0 테스트 (테마: {args.themes}개, {stocks_info})")
     print("=" * 70)
 
     pipeline = PipelineV2()
@@ -1026,6 +1040,7 @@ if __name__ == "__main__":
                 max_stocks=args.stocks,
                 year=datetime.now().year,
                 verbose=True,
+                stocks_per_theme=args.stocks_per_theme,
             )
             print(f"  결과: {stage0.status.value}")
             if stage0.data:
@@ -1134,3 +1149,38 @@ if __name__ == "__main__":
                     print(f"\n{'=' * 70}")
                     print(f"💡 상위 3개 종목만 표시됨 (전체: {len(results)}개)")
                     print(f"{'=' * 70}")
+
+        # Stage 2
+        if max_stage >= 2:
+            print("\n[Stage 2] 섹터 Type 분류")
+            stage2 = pipeline._run_sector_type(verbose=True)
+            print(f"  결과: {stage2.status.value}")
+            if stage2.data:
+                print(f"  테마 수: {stage2.data.get('theme_count', 0)}개")
+                summary = stage2.data.get("summary", {})
+                print(f"  Type A (실적형): {summary.get('type_a_count', 0)}개")
+                print(f"  Type B (성장형): {summary.get('type_b_count', 0)}개")
+                print(f"  평균 신뢰도: {summary.get('avg_confidence', 0):.2f}")
+
+                # 테마별 분류 결과 출력
+                results = stage2.data.get("results", [])
+                if results:
+                    print("\n  [테마별 Type 분류 결과]")
+                    print("  " + "-" * 70)
+                    for r in results:
+                        theme_name = r.get("theme_name", "")
+                        sector_type = r.get("sector_type", "")
+                        confidence = r.get("confidence", 0)
+                        reasoning = r.get("reasoning", "")[:60]
+                        keywords = r.get("matched_keywords", [])
+
+                        # sector_type은 "earnings_driven" 또는 "growth_driven" (enum value)
+                        is_type_a = "earnings" in sector_type.lower() or "type_a" in sector_type.lower()
+                        type_emoji = "📊" if is_type_a else "🚀"
+                        type_label = "A (실적형)" if is_type_a else "B (성장형)"
+                        print(f"  {type_emoji} {theme_name}")
+                        print(f"    Type: {type_label} (신뢰도: {confidence:.2f})")
+                        print(f"    근거: {reasoning}{'...' if len(r.get('reasoning', '')) > 60 else ''}")
+                        if keywords:
+                            print(f"    키워드: {', '.join(keywords[:5])}")
+                        print()
