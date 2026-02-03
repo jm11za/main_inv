@@ -281,18 +281,18 @@ class PreflightChecker:
                 response = requests.get("http://127.0.0.1:11434/api/tags", timeout=(3, 3))
                 if response.status_code != 200:
                     result.ollama["error"] = "서버 연결 실패"
-                    self.logger.warning("  ✗ Ollama 서버 연결 실패")
+                    self.logger.warning("  [FAIL] Ollama 서버 연결 실패")
                     return
             except Exception as e:
                 result.ollama["error"] = f"서버 연결 실패: {e}"
-                self.logger.warning(f"  ✗ Ollama 서버 연결 실패: {e}")
+                self.logger.warning(f"  [FAIL] Ollama 서버 연결 실패: {e}")
                 return
 
             # 사용 가능한 모델 목록
             available_models = self.get_available_models()
             if not available_models:
                 result.ollama["error"] = "사용 가능한 모델 없음"
-                self.logger.warning("  ✗ 사용 가능한 모델 없음")
+                self.logger.warning("  [FAIL] 사용 가능한 모델 없음")
                 return
 
             # 시도할 모델 목록 구성
@@ -327,7 +327,7 @@ class PreflightChecker:
                         self._ollama_client = client
                         result.ollama["available"] = True
                         result.ollama["model"] = try_model
-                        self.logger.info(f"  ✓ Ollama 준비 완료: {try_model}")
+                        self.logger.info(f"  [OK] Ollama 준비 완료: {try_model}")
                         return
                     else:
                         self.logger.warning(f"    → {try_model} 응답 느림, 다음 모델 시도...")
@@ -338,11 +338,11 @@ class PreflightChecker:
 
             # 모든 모델 실패
             result.ollama["error"] = "모든 모델 응답 실패"
-            self.logger.warning("  ✗ 모든 모델 Warm-up 실패")
+            self.logger.warning("  [FAIL] 모든 모델 Warm-up 실패")
 
         except Exception as e:
             result.ollama["error"] = str(e)
-            self.logger.warning(f"  ✗ Ollama 확인 실패: {e}")
+            self.logger.warning(f"  [FAIL] Ollama 확인 실패: {e}")
 
     def _check_claude_cli(self, result: PreflightResult):
         """Claude CLI 사용 가능 여부 확인"""
@@ -355,7 +355,7 @@ class PreflightChecker:
 
             if client.is_available():
                 result.claude_cli["available"] = True
-                self.logger.info("  ✓ Claude CLI 사용 가능")
+                self.logger.info("  [OK] Claude CLI 사용 가능")
 
                 # 간단한 테스트 (선택적)
                 try:
@@ -375,14 +375,14 @@ class PreflightChecker:
                     pass
             else:
                 result.claude_cli["error"] = "CLI 명령어 실행 실패"
-                self.logger.warning("  ✗ Claude CLI 사용 불가")
+                self.logger.warning("  [FAIL] Claude CLI 사용 불가")
 
         except ImportError as e:
             result.claude_cli["error"] = f"모듈 임포트 실패: {e}"
-            self.logger.warning(f"  ✗ Claude CLI 모듈 로드 실패: {e}")
+            self.logger.warning(f"  [FAIL] Claude CLI 모듈 로드 실패: {e}")
         except Exception as e:
             result.claude_cli["error"] = str(e)
-            self.logger.warning(f"  ✗ Claude CLI 확인 실패: {e}")
+            self.logger.warning(f"  [FAIL] Claude CLI 확인 실패: {e}")
 
     def _check_naver(self, result: PreflightResult):
         """네이버 금융 접근 확인"""
@@ -397,13 +397,13 @@ class PreflightChecker:
             )
             if response.status_code == 200:
                 result.naver["available"] = True
-                self.logger.info("  ✓ 네이버 금융 접근 가능")
+                self.logger.info("  [OK] 네이버 금융 접근 가능")
             else:
                 result.naver["error"] = f"HTTP {response.status_code}"
-                self.logger.warning(f"  ✗ 네이버 금융 응답 오류: {response.status_code}")
+                self.logger.warning(f"  [FAIL] 네이버 금융 응답 오류: {response.status_code}")
         except Exception as e:
             result.naver["error"] = str(e)
-            self.logger.warning(f"  ✗ 네이버 금융 접근 실패: {e}")
+            self.logger.warning(f"  [FAIL] 네이버 금융 접근 실패: {e}")
 
     def _check_dart_api(self, result: PreflightResult):
         """DART API 연결 확인 (직접 연결 → 실패 시 프록시)"""
@@ -421,7 +421,7 @@ class PreflightChecker:
 
             if not api_key:
                 result.dart_api["error"] = "API 키가 설정되지 않음 (DART_API_KEY)"
-                self.logger.warning("  ✗ DART API 키 없음")
+                self.logger.warning("  [FAIL] DART API 키 없음")
                 return
 
             test_url = "https://opendart.fss.or.kr/api/company.json"
@@ -436,7 +436,7 @@ class PreflightChecker:
                     if data.get("status") == "000":
                         result.dart_api["available"] = True
                         result.dart_api["use_proxy"] = False
-                        self.logger.info("  ✓ DART API 직접 연결 성공")
+                        self.logger.info("  [OK] DART API 직접 연결 성공")
                         return
                     elif data.get("status") == "013":
                         self.logger.warning("  - 직접 연결 Rate Limit, 프록시 시도...")
@@ -463,27 +463,27 @@ class PreflightChecker:
                         # 검증된 프록시 저장 (이후 DartApiClient에서 재사용)
                         from src.ingest.dart_client import set_verified_proxy
                         set_verified_proxy(proxy)
-                        self.logger.info("  ✓ DART API 프록시 연결 성공")
+                        self.logger.info("  [OK] DART API 프록시 연결 성공")
                         return
                     else:
                         result.dart_api["error"] = f"API 오류: {data.get('message')}"
-                        self.logger.warning(f"  ✗ DART API 오류: {data.get('message')}")
+                        self.logger.warning(f"  [FAIL] DART API 오류: {data.get('message')}")
                 else:
                     result.dart_api["error"] = f"HTTP {response.status_code}"
-                    self.logger.warning(f"  ✗ DART API 프록시 응답 오류: {response.status_code}")
+                    self.logger.warning(f"  [FAIL] DART API 프록시 응답 오류: {response.status_code}")
             except ImportError:
                 result.dart_api["error"] = "프록시 모듈(free-proxy) 설치 필요"
-                self.logger.warning("  ✗ free-proxy 모듈 없음 (pip install free-proxy)")
+                self.logger.warning("  [FAIL] free-proxy 모듈 없음 (pip install free-proxy)")
             except Exception as e:
                 result.dart_api["error"] = f"프록시 연결 실패: {e}"
-                self.logger.warning(f"  ✗ DART API 프록시 연결 실패: {e}")
+                self.logger.warning(f"  [FAIL] DART API 프록시 연결 실패: {e}")
 
         except ImportError as e:
             result.dart_api["error"] = f"requests 모듈 없음: {e}"
-            self.logger.warning(f"  ✗ requests 모듈 없음: {e}")
+            self.logger.warning(f"  [FAIL] requests 모듈 없음: {e}")
         except Exception as e:
             result.dart_api["error"] = str(e)
-            self.logger.warning(f"  ✗ DART API 확인 실패: {e}")
+            self.logger.warning(f"  [FAIL] DART API 확인 실패: {e}")
 
     def _check_telegram(self, result: PreflightResult):
         """Telegram Bot 연결 확인"""
@@ -501,12 +501,12 @@ class PreflightChecker:
 
             if not bot_token:
                 result.telegram["error"] = "Bot 토큰이 설정되지 않음 (TELEGRAM_BOT_TOKEN)"
-                self.logger.warning("  ✗ Telegram Bot 토큰 없음 (선택 사항)")
+                self.logger.warning("  [FAIL] Telegram Bot 토큰 없음 (선택 사항)")
                 return
 
             if not chat_id:
                 result.telegram["error"] = "Chat ID가 설정되지 않음 (TELEGRAM_CHAT_ID)"
-                self.logger.warning("  ✗ Telegram Chat ID 없음 (선택 사항)")
+                self.logger.warning("  [FAIL] Telegram Chat ID 없음 (선택 사항)")
                 return
 
             # Bot 연결 테스트 (getMe API)
@@ -523,17 +523,17 @@ class PreflightChecker:
                     bot_name = bot_info.get("username", "")
                     result.telegram["available"] = True
                     result.telegram["bot_name"] = bot_name
-                    self.logger.info(f"  ✓ Telegram Bot 연결 성공: @{bot_name}")
+                    self.logger.info(f"  [OK] Telegram Bot 연결 성공: @{bot_name}")
                 else:
                     result.telegram["error"] = data.get("description", "Unknown error")
-                    self.logger.warning(f"  ✗ Telegram Bot 응답 오류: {data.get('description')}")
+                    self.logger.warning(f"  [FAIL] Telegram Bot 응답 오류: {data.get('description')}")
             else:
                 result.telegram["error"] = f"HTTP {response.status_code}"
-                self.logger.warning(f"  ✗ Telegram API 응답 오류: {response.status_code}")
+                self.logger.warning(f"  [FAIL] Telegram API 응답 오류: {response.status_code}")
 
         except Exception as e:
             result.telegram["error"] = str(e)
-            self.logger.warning(f"  ✗ Telegram Bot 확인 실패: {e} (선택 사항)")
+            self.logger.warning(f"  [FAIL] Telegram Bot 확인 실패: {e} (선택 사항)")
 
     def _check_pykrx(self, result: PreflightResult):
         """pykrx 모듈 확인"""
@@ -542,10 +542,10 @@ class PreflightChecker:
         try:
             from pykrx import stock
             result.pykrx["available"] = True
-            self.logger.info("  ✓ pykrx 모듈 로드 성공")
+            self.logger.info("  [OK] pykrx 모듈 로드 성공")
         except ImportError as e:
             result.pykrx["error"] = str(e)
-            self.logger.warning(f"  ✗ pykrx 임포트 실패: {e}")
+            self.logger.warning(f"  [FAIL] pykrx 임포트 실패: {e}")
 
     def _check_modules(self, result: PreflightResult):
         """필수 모듈 확인"""
@@ -574,10 +574,10 @@ class PreflightChecker:
             from src.analysis import FlowCalculator, TierClassifier
 
             result.modules["available"] = True
-            self.logger.info("  ✓ 모든 필수 모듈 로드 성공")
+            self.logger.info("  [OK] 모든 필수 모듈 로드 성공")
         except ImportError as e:
             result.modules["error"] = str(e)
-            self.logger.warning(f"  ✗ 모듈 임포트 실패: {e}")
+            self.logger.warning(f"  [FAIL] 모듈 임포트 실패: {e}")
 
     def get_ollama_client(self):
         """Warm-up된 Ollama 클라이언트 반환"""

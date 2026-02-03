@@ -17,6 +17,12 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 import sys
+import io
+
+# Windows 터미널 UTF-8 출력 설정
+if sys.platform == 'win32':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 from src.core.logger import get_logger, LoggerService
 from src.core.config import get_config

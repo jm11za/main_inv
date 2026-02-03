@@ -14,10 +14,10 @@ from src.core.config import get_config
 
 
 def print_progress(current: int, total: int, prefix: str = "", suffix: str = "", width: int = 30):
-    """진행률 바 출력"""
+    """진행률 바 출력 (ASCII 호환)"""
     percent = current / total if total > 0 else 0
     filled = int(width * percent)
-    bar = "█" * filled + "░" * (width - filled)
+    bar = "#" * filled + "-" * (width - filled)
     print(f"\r  {prefix} [{bar}] {current}/{total} {suffix}", end="", flush=True)
     if current >= total:
         print()  # 완료 시 줄바꿈
@@ -137,7 +137,7 @@ class StageRunner:
                     break
 
             if verbose:
-                print(f"  ✓ 테마 {len(themes)}개 수집 완료\n")
+                print(f"  [OK] 테마 {len(themes)}개 수집 완료\n")
 
             # 테마별 종목 수집
             if verbose:
@@ -153,7 +153,7 @@ class StageRunner:
                     print_progress(i + 1, len(themes), prefix="", suffix=f"{theme.name[:15]}: {len(stocks)}개")
 
             if verbose:
-                print(f"  ✓ 종목 {len(all_stocks)}개 수집 완료 (중복 제거)\n")
+                print(f"  [OK] 종목 {len(all_stocks)}개 수집 완료 (중복 제거)\n")
 
             return {
                 "theme_count": len(themes),
@@ -197,7 +197,7 @@ class StageRunner:
                     print_progress(i + 1, len(stock_codes), suffix=f"{name}")
 
             if verbose:
-                print(f"  ✓ 주가 {len(results)}개 수집 완료 (실패: {len(failed)}개)\n")
+                print(f"  [OK] 주가 {len(results)}개 수집 완료 (실패: {len(failed)}개)\n")
 
             return {
                 "stock_count": len(results),
@@ -256,7 +256,7 @@ class StageRunner:
                     print_progress(i + 1, len(stock_codes), suffix=f"{display_name}")
 
             if verbose:
-                print(f"  ✓ 재무 {len(results)}개 수집 완료 (제외: {len(excluded)}개, 오류: {len(failed)}개)\n")
+                print(f"  [OK] 재무 {len(results)}개 수집 완료 (제외: {len(excluded)}개, 오류: {len(failed)}개)\n")
 
             # 오류가 있으면 상세 로그 출력
             if failed:
@@ -319,7 +319,7 @@ class StageRunner:
                     print_progress(i + 1, len(stock_codes), suffix=f"{name}")
 
             if verbose:
-                print(f"  ✓ 펀더멘탈 {len(fundamental_data)}개, 수급 {len(supply_data)}개 수집 완료\n")
+                print(f"  [OK] 펀더멘탈 {len(fundamental_data)}개, 수급 {len(supply_data)}개 수집 완료\n")
 
             return {
                 "stock_count": len(fundamental_data),
@@ -390,7 +390,7 @@ class StageRunner:
 
             if verbose:
                 total_articles = sum(len(v) for v in results.values())
-                print(f"  ✓ 뉴스 {len(results)}개 종목, 총 {total_articles}건 수집 완료\n")
+                print(f"  [OK] 뉴스 {len(results)}개 종목, 총 {total_articles}건 수집 완료\n")
 
             return {
                 "stock_count": len(results),
@@ -439,7 +439,7 @@ class StageRunner:
                     print_progress(i + 1, len(stock_codes), suffix=f"{name}")
 
             if verbose:
-                print(f"  ✓ 사업개요 {len(results)}개 수집 완료 (실패: {len(failed)}개)\n")
+                print(f"  [OK] 사업개요 {len(results)}개 수집 완료 (실패: {len(failed)}개)\n")
 
             return {
                 "stock_count": len(results),
@@ -528,7 +528,7 @@ class StageRunner:
 
             if verbose:
                 valid_count = sum(1 for v in results.values() if v.get("community_posts"))
-                print(f"  ✓ 토론방 {valid_count}/{len(stock_codes)}개 수집 완료\n")
+                print(f"  [OK] 토론방 {valid_count}/{len(stock_codes)}개 수집 완료\n")
 
             return {
                 "stock_count": len(results),
