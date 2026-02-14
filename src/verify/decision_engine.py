@@ -387,7 +387,7 @@ class DecisionEngine:
                 {
                     "code": d.stock_code,
                     "name": d.stock_name,
-                    "sector": d.sector.value,
+                    "sector": d.sector,
                     "thesis": d.investment_thesis,
                 }
                 for d in strong_buys
@@ -396,7 +396,7 @@ class DecisionEngine:
                 {
                     "code": d.stock_code,
                     "name": d.stock_name,
-                    "sector": d.sector.value,
+                    "sector": d.sector,
                     "thesis": d.investment_thesis,
                 }
                 for d in buys

@@ -365,5 +365,37 @@ class TestDecisionEngineRiskWarnings:
         assert any("부정" in w or "경쟁" in w for w in decision.risk_warnings)
 
 
+class TestDecisionEngineSummarize:
+    """summarize() 테스트 (v3.0 sector 문자열 호환)"""
+
+    def test_summarize_basic(self):
+        """요약 통계 정상 동작"""
+        engine = DecisionEngine()
+        d1 = engine.decide(
+            "A", "종목A", "반도체", TrackType.TRACK_A,
+            1, 80, True,
+            _make_material(grade=MaterialGrade.S),
+            _make_sentiment(stage=SentimentStage.FEAR),
+        )
+        d2 = engine.decide(
+            "B", "종목B", "바이오", TrackType.TRACK_B,
+            5, 65, True,
+            _make_material(grade=MaterialGrade.A),
+            _make_sentiment(stage=SentimentStage.DOUBT),
+        )
+        summary = engine.summarize([d1, d2])
+        assert summary["total"] == 2
+        assert summary["strong_buy_stocks"][0]["sector"] == "반도체"
+        assert summary["buy_stocks"][0]["sector"] == "바이오"
+        assert summary["avg_confidence"] > 0
+
+    def test_summarize_empty(self):
+        """빈 리스트 요약"""
+        engine = DecisionEngine()
+        summary = engine.summarize([])
+        assert summary["total"] == 0
+        assert summary["avg_confidence"] == 0
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
