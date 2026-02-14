@@ -99,6 +99,7 @@ class DecisionEngine:
     # STRONG_BUY 조건
     STRONG_BUY_CRITERIA = {
         "max_sector_rank": 2,
+        "min_score": 40,
         "min_material_grade": [MaterialGrade.S, MaterialGrade.A],
         "allowed_sentiment": [SentimentStage.FEAR, SentimentStage.DOUBT],
     }
@@ -176,12 +177,14 @@ class DecisionEngine:
         is_top_sector = sector_rank <= self.STRONG_BUY_CRITERIA["max_sector_rank"]
         is_good_material = material.grade in self.STRONG_BUY_CRITERIA["min_material_grade"]
         is_early_sentiment = sentiment.stage in self.STRONG_BUY_CRITERIA["allowed_sentiment"]
+        is_min_score = total_score >= self.STRONG_BUY_CRITERIA["min_score"]
 
-        if is_top_sector and is_good_material and is_early_sentiment:
+        if is_top_sector and is_good_material and is_early_sentiment and is_min_score:
             decision_factors = [
                 f"상위 섹터 ({sector_rank}위)",
                 f"재료 {material.grade.value}등급",
                 f"심리 {sentiment.stage.value} 단계 (초기)",
+                f"점수 {total_score:.1f}",
             ]
 
             if material.key_materials:
@@ -191,13 +194,20 @@ class DecisionEngine:
             if material.negative_factors:
                 risk_warnings.append(f"부정요소: {', '.join(material.negative_factors[:2])}")
 
+            key_mat = ', '.join(material.key_materials[:2]) if material.key_materials else "양호"
+            thesis = (
+                f"{stock_name}({sector} {sector_rank}위) "
+                f"재료 {material.grade.value}급({key_mat}), "
+                f"{sentiment.stage.value} 단계 → 적극 매수 검토"
+            )
+
             return self._create_decision(
                 stock_code, stock_name, sector, track_type, sector_rank,
                 total_score, filter_passed, material, sentiment,
                 Recommendation.STRONG_BUY,
                 decision_factors,
                 risk_warnings,
-                "상위 섹터에서 좋은 재료와 초기 심리 단계 - 적극 매수 검토"
+                thesis,
             )
 
         # 3. BUY 조건 체크
@@ -218,13 +228,19 @@ class DecisionEngine:
             if material.negative_factors:
                 risk_warnings.append(f"부정요소: {', '.join(material.negative_factors[:2])}")
 
+            key_mat = ', '.join(material.key_materials[:2]) if material.key_materials else "양호"
+            thesis = (
+                f"{stock_name}({sector}) 점수 {total_score:.0f}, "
+                f"재료 {material.grade.value}급({key_mat}) → 매수 검토"
+            )
+
             return self._create_decision(
                 stock_code, stock_name, sector, track_type, sector_rank,
                 total_score, filter_passed, material, sentiment,
                 Recommendation.BUY,
                 decision_factors,
                 risk_warnings,
-                "재무/기술 지표 양호하고 재료 있음 - 매수 검토"
+                thesis,
             )
 
         # 4. WATCH 조건 체크
@@ -240,13 +256,18 @@ class DecisionEngine:
             if total_score < 60:
                 risk_warnings.append("점수 보통 - 추가 상승 동력 확인 필요")
 
+            thesis = (
+                f"{stock_name}({sector}) 점수 {total_score:.0f} - "
+                f"관찰 후 추가 조건 충족 시 진입 검토"
+            )
+
             return self._create_decision(
                 stock_code, stock_name, sector, track_type, sector_rank,
                 total_score, filter_passed, material, sentiment,
                 Recommendation.WATCH,
                 decision_factors,
                 risk_warnings,
-                "관심 종목으로 관찰 - 추가 조건 충족 시 진입 검토"
+                thesis,
             )
 
         # 5. 그 외는 AVOID
