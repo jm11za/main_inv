@@ -16,11 +16,6 @@ from src.processing.data_transformer import (
     StockFinancials,
     StockSupplyDemand,
 )
-from src.processing.sector_labeler import (
-    SectorLabeler,
-    SectorLabel,
-    SectorCategory,
-)
 
 __all__ = [
     # Preprocessor

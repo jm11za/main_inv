@@ -66,5 +66,12 @@ reports/
 .DS_Store
 Thumbs.db
 
+# 캐시
+cache/
+docs_cache/
+
 # Claude 설정 (로컬)
 .claude/
+
+# Windows temp
+nul

@@ -19,11 +19,6 @@ from typing import Any
 import sys
 import io
 
-# Windows 터미널 UTF-8 출력 설정
-if sys.platform == 'win32':
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
-
 from src.core.logger import get_logger, LoggerService
 from src.core.config import get_config
 from src.core.interfaces import SectorType, TrackType
@@ -993,6 +988,11 @@ if __name__ == "__main__":
     예시:
         python -m src.orchestrator.pipeline_v2 --themes 6 --stocks 30
     """
+    # Windows 터미널 UTF-8 출력 설정 (직접 실행 시에만)
+    if sys.platform == 'win32':
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+
     import argparse
 
     parser = argparse.ArgumentParser(description="Pipeline v2.0 테스트 실행")

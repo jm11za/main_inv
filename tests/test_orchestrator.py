@@ -1,14 +1,13 @@
 """
 Orchestrator 테스트
 
-v1.0 Pipeline 및 v2.0 PipelineV2 테스트
+v2.0 PipelineV2 테스트
 """
 import pytest
 from unittest.mock import Mock, patch, MagicMock
 from datetime import datetime
 
 from src.orchestrator.stage_runner import StageRunner, StageResult, StageStatus
-from src.orchestrator.pipeline import Pipeline, PipelineResult
 from src.orchestrator.pipeline_v2 import PipelineV2, PipelineV2Result
 
 
@@ -66,52 +65,6 @@ class TestStageRunner:
         runner = StageRunner()
         assert runner is not None
 
-    def test_run_ingest_themes_mock(self):
-        """테마 수집 실행 (모의)"""
-        runner = StageRunner()
-
-        # 실행 메서드를 직접 목킹
-        with patch.object(runner, "_run_stage") as mock_run:
-            mock_run.return_value = StageResult(
-                stage_name="Ingest:Themes",
-                status=StageStatus.SUCCESS,
-                data={"theme_count": 2, "themes": []}
-            )
-
-            result = runner.run_ingest_themes()
-            # _run_stage가 호출되므로 mock 결과가 반환됨
-            # 실제 호출 확인은 어렵지만 구조 테스트
-
-        assert runner is not None
-
-    def test_run_ingest_prices_mock(self):
-        """주가 수집 실행 (모의)"""
-        runner = StageRunner()
-
-        with patch.object(runner, "_run_stage") as mock_run:
-            mock_run.return_value = StageResult(
-                stage_name="Ingest:Prices",
-                status=StageStatus.SUCCESS,
-                data={"price_data": {}, "stock_count": 0}
-            )
-
-            # 구조 테스트
-            assert runner is not None
-
-    def test_run_ingest_financials_mock(self):
-        """재무 수집 실행 (모의)"""
-        runner = StageRunner()
-
-        with patch.object(runner, "_run_stage") as mock_run:
-            mock_run.return_value = StageResult(
-                stage_name="Ingest:Financials",
-                status=StageStatus.SUCCESS,
-                data={"financial_data": {}, "stock_count": 0}
-            )
-
-            # 구조 테스트
-            assert runner is not None
-
     def test_run_stage_failure(self):
         """단계 실패 처리"""
         runner = StageRunner()
@@ -123,156 +76,6 @@ class TestStageRunner:
 
         assert result.status == StageStatus.FAILED
         assert "Test error" in result.error
-
-
-class TestPipelineResult:
-    """PipelineResult 테스트"""
-
-    def test_create_result(self):
-        """결과 생성"""
-        result = PipelineResult(
-            success=True,
-            started_at=datetime.now()
-        )
-
-        assert result.success is True
-        assert len(result.stage_results) == 0
-
-    def test_get_stage(self):
-        """단계 결과 조회"""
-        stage1 = StageResult(stage_name="Stage1", status=StageStatus.SUCCESS)
-        stage2 = StageResult(stage_name="Stage2", status=StageStatus.SUCCESS)
-
-        result = PipelineResult(
-            success=True,
-            started_at=datetime.now(),
-            stage_results=[stage1, stage2]
-        )
-
-        assert result.get_stage("Stage1") == stage1
-        assert result.get_stage("Stage3") is None
-
-    def test_to_summary(self):
-        """요약 정보"""
-        result = PipelineResult(
-            success=True,
-            started_at=datetime.now(),
-            completed_at=datetime.now(),
-            final_recommendations=[{"stock": "005930", "action": "BUY"}]
-        )
-
-        summary = result.to_summary()
-
-        assert summary["success"] is True
-        assert len(summary["recommendations"]) == 1
-
-
-class TestPipeline:
-    """Pipeline 테스트"""
-
-    def test_init(self):
-        """초기화"""
-        pipeline = Pipeline()
-        assert pipeline is not None
-        assert len(pipeline.STAGES) == 8  # sector_labeling 추가됨
-
-    def test_run_full_with_stock_codes(self):
-        """종목 코드 직접 지정 시 파이프라인"""
-        pipeline = Pipeline()
-
-        # 빈 종목으로 테스트 (테마 건너뛰기)
-        with patch.object(StageRunner, "run_ingest_prices") as mock_prices, \
-             patch.object(StageRunner, "run_ingest_financials") as mock_fin, \
-             patch.object(StageRunner, "run_ingest_news") as mock_news, \
-             patch.object(StageRunner, "run_ingest_community") as mock_comm, \
-             patch.object(StageRunner, "run_processing") as mock_proc, \
-             patch.object(StageRunner, "run_sector_labeling") as mock_sector, \
-             patch.object(StageRunner, "run_analysis") as mock_anal, \
-             patch.object(StageRunner, "run_filtering") as mock_filt:
-
-            import pandas as pd
-
-            mock_prices.return_value = StageResult(
-                stage_name="Ingest:Prices",
-                status=StageStatus.SUCCESS,
-                data={"price_data": {}, "stock_count": 0}
-            )
-            mock_fin.return_value = StageResult(
-                stage_name="Ingest:Financials",
-                status=StageStatus.SUCCESS,
-                data={"financial_data": {}, "stock_count": 0}
-            )
-            mock_news.return_value = StageResult(
-                stage_name="Ingest:News",
-                status=StageStatus.SUCCESS,
-                data={"news_data": {}, "stock_count": 0}
-            )
-            mock_comm.return_value = StageResult(
-                stage_name="Ingest:Community",
-                status=StageStatus.SUCCESS,
-                data={"community_data": {}, "stock_count": 0}
-            )
-            mock_proc.return_value = StageResult(
-                stage_name="Processing",
-                status=StageStatus.SUCCESS,
-                data={"processed_data": {}, "stock_count": 0}
-            )
-            mock_sector.return_value = StageResult(
-                stage_name="SectorLabeling",
-                status=StageStatus.SUCCESS,
-                data={"sector_labels": {}, "sector_types": {}, "summary": {}}
-            )
-            mock_anal.return_value = StageResult(
-                stage_name="Analysis",
-                status=StageStatus.SUCCESS,
-                data={"sector_metrics": {}, "tier_results": {}}
-            )
-            mock_filt.return_value = StageResult(
-                stage_name="Filtering",
-                status=StageStatus.SUCCESS,
-                data={"filter_results": {}, "passed_codes": []}
-            )
-
-            result = pipeline.run_full(
-                stock_codes=["005930"],
-                skip_themes=True
-            )
-
-            # 필터 통과 종목 없으면 성공으로 종료
-            assert result.success is True
-
-    def test_run_full_no_stocks(self):
-        """종목 없을 때"""
-        pipeline = Pipeline()
-
-        with patch.object(StageRunner, "run_ingest_themes") as mock_themes:
-            mock_themes.return_value = StageResult(
-                stage_name="Ingest:Themes",
-                status=StageStatus.SUCCESS,
-                data={"themes": [], "theme_count": 0}
-            )
-
-            result = pipeline.run_full()
-
-            assert result.success is False
-            assert "분석할 종목이 없습니다" in result.error
-
-
-class TestPipelineIntegration:
-    """통합 테스트 (실제 네트워크 호출)"""
-
-    @pytest.mark.skip(reason="실제 네트워크 호출 - 수동 실행")
-    def test_run_quick_real(self):
-        """실제 빠른 분석 테스트"""
-        pipeline = Pipeline()
-        result = pipeline.run_quick(
-            stock_codes=["005930"],
-            year=2025
-        )
-
-        print(f"성공: {result.success}")
-        print(f"시간: {result.duration_seconds:.1f}초")
-        print(f"추천: {result.final_recommendations}")
 
 
 # =============================================================================

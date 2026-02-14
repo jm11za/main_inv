@@ -35,8 +35,9 @@ class TestProjectSetup:
         import src.processing
         import src.analysis
         import src.filtering
-        import src.scoring
-        import src.decision
+        import src.sector
+        import src.stock
+        import src.verify
         import src.output
         import src.llm
         assert src is not None
