@@ -168,7 +168,7 @@ class StageRunner:
         self,
         stock_codes: list[str],
         stock_names: dict[str, str] = None,
-        days: int = 120,
+        days: int = 200,
         verbose: bool = True
     ) -> StageResult:
         """주가 데이터 수집"""

@@ -48,7 +48,7 @@ class StockFilter:
 
     Track A (Hard Filter) - 실적형:
     - 영업이익 4Q > 0 (필수)
-    - 부채비율 < 200%
+    - 부채비율 < 200% (금융업종: < 1500%)
     - PBR < 3.0
     - 거래대금 > 10억
 
@@ -66,6 +66,12 @@ class StockFilter:
         # 배치 필터
         results = filter.apply_batch(stocks_data, sector_type=SectorType.TYPE_A)
     """
+
+    # 금융업종 키워드 (부채비율 기준 완화 대상)
+    FINANCIAL_SECTOR_KEYWORDS = [
+        "증권", "보험", "은행", "금융", "캐피탈", "카드",
+        "저축은행", "투자", "자산운용", "리츠", "REITs",
+    ]
 
     # Track A 조건 (Hard Filter)
     TRACK_A_CONDITIONS = {
@@ -142,6 +148,13 @@ class StockFilter:
         self.logger = get_logger(self.__class__.__name__)
         self.config = get_config()
 
+    def _is_financial_sector(self, stock_data: dict) -> bool:
+        """금융업종 여부 판별 (테마명/종목명 기반)"""
+        sector = stock_data.get("sector", "")
+        stock_name = stock_data.get("stock_name", "")
+        text = f"{sector} {stock_name}"
+        return any(kw in text for kw in self.FINANCIAL_SECTOR_KEYWORDS)
+
     def apply(
         self,
         stock_data: dict,
@@ -168,9 +181,20 @@ class StockFilter:
         stock_code = stock_data.get("stock_code", "")
         stock_name = stock_data.get("stock_name", "")
 
+        # 금융업종 판별 (테마명 또는 종목명 기반)
+        is_financial = self._is_financial_sector(stock_data)
+
         # 조건 선택
         if track_type == TrackType.TRACK_A:
-            conditions = self.TRACK_A_CONDITIONS
+            conditions = self.TRACK_A_CONDITIONS.copy()
+            # 금융업종은 부채비율 기준 완화 (레버리지가 사업 모델의 핵심)
+            if is_financial and "debt_ratio" in conditions:
+                conditions = {k: (v if k != "debt_ratio" else {
+                    **v,
+                    "check": lambda v: v < 1500,
+                    "threshold": 1500,
+                    "message_fail": "부채비율 과다 ({value:.0f}% >= 1500%) [금융업]",
+                }) for k, v in conditions.items()}
         else:
             conditions = self.TRACK_B_CONDITIONS
 

@@ -200,7 +200,9 @@ class PipelineV2:
         verbose = verbose if verbose is not None else pipeline_config.get("verbose", True)
 
         if year is None:
-            year = datetime.now().year
+            now = datetime.now()
+            # 1~3월은 전년도 사업보고서가 아직 공시 전이므로 year-1 사용
+            year = now.year - 1 if now.month <= 3 else now.year
 
         if testmode:
             self.logger.info(f"*** 테스트 모드: {max_themes}개 테마, {max_stocks}개 종목 제한 ***")
@@ -312,11 +314,23 @@ class PipelineV2:
                 aggregated = self.stage_saver.aggregate_all_stages()
                 self.stage_saver.save_daily_report(aggregated)
 
-                # 텔레그램 메시지 생성 및 저장
+                # 텔레그램 메시지 생성, 저장 및 발송
                 from src.output import ReportGenerator
                 generator = ReportGenerator()
                 telegram_msg = generator.format_telegram_from_stages(aggregated)
                 self.stage_saver.save_telegram_message(telegram_msg)
+
+                # 텔레그램 실제 발송
+                from src.output.telegram_notifier import TelegramNotifier
+                notifier = TelegramNotifier()
+                if notifier.is_configured():
+                    notifier.send_message(telegram_msg)
+                    notifier.close()
+                else:
+                    self.logger.warning("Telegram 미설정: 메시지 파일 저장만 완료")
+
+            # ===== DB 저장 =====
+            self._save_to_database(result)
 
             # 요약 생성
             result.summary = self._generate_summary(result)
@@ -870,6 +884,27 @@ class PipelineV2:
             if code in news_data:
                 news_count += len(news_data[code])
 
+        # 재무 지표 계산 (Type A용)
+        financial_data = self._cache.get("financial_data", {})
+        profit_yoys = []
+        positive_count = 0
+        total_with_data = 0
+        for code in stock_codes:
+            fin = financial_data.get(code, {})
+            if fin.get("has_data"):
+                total_with_data += 1
+                op = fin.get("operating_profit", 0) or 0
+                if op > 0:
+                    positive_count += 1
+                # YoY는 단일연도 데이터로 계산 불가하므로 영업이익률 기반 대리 지표 사용
+                revenue = fin.get("revenue", 0) or 0
+                if revenue > 0:
+                    op_margin = (op / revenue) * 100
+                    profit_yoys.append(op_margin)
+
+        avg_operating_profit_yoy = sum(profit_yoys) / len(profit_yoys) if profit_yoys else 0.0
+        positive_profit_ratio = positive_count / total_with_data if total_with_data > 0 else 0.0
+
         # sector_type이 None인 경우 기본값 설정
         if sector_type is None:
             sector_type = SectorType.TYPE_A
@@ -881,6 +916,8 @@ class PipelineV2:
             s_flow=s_flow,
             s_breadth=s_breadth,
             s_trend=s_trend,
+            avg_operating_profit_yoy=avg_operating_profit_yoy,
+            positive_profit_ratio=positive_profit_ratio,
             news_count=news_count,
         )
 
@@ -947,6 +984,75 @@ class PipelineV2:
             "high_52w_proximity": high_52w_proximity,
         }
 
+    def _save_to_database(self, result: PipelineV2Result):
+        """분석 결과를 DB에 저장"""
+        try:
+            from src.core.database import init_database_from_config
+            from src.core.models import AnalysisHistoryModel, StockScoreHistoryModel
+            import json
+
+            db = init_database_from_config()
+            db.create_all_tables()
+
+            # Stage 3 결과에서 섹터 tier 정보 추출
+            tier1_sectors = []
+            tier2_sectors = []
+            if "03_sector_priority" in result.stages:
+                priorities = result.stages["03_sector_priority"].data.get("results", [])
+                for p in priorities:
+                    if p.get("is_selected"):
+                        rank = p.get("rank", 99)
+                        name = p.get("theme_name", "")
+                        if rank <= 2:
+                            tier1_sectors.append(name)
+                        else:
+                            tier2_sectors.append(name)
+
+            # 추천 종목 분류
+            decisions = result.final_decisions or []
+            top_buy = [d for d in decisions if d.get("recommendation") in ("STRONG_BUY", "BUY")]
+            top_watch = [d for d in decisions if d.get("recommendation") == "WATCH"]
+
+            with db.session() as session:
+                # 1. AnalysisHistory 저장
+                total_stocks = 0
+                if "04_stock_selection" in result.stages:
+                    total_stocks = result.stages["04_stock_selection"].data.get("selected_count", 0)
+
+                history = AnalysisHistoryModel(
+                    run_date=result.started_at,
+                    total_stocks=total_stocks,
+                    passed_filter=len(decisions),
+                    tier1_sectors=",".join(tier1_sectors),
+                    tier2_sectors=",".join(tier2_sectors),
+                    top_buy=json.dumps(top_buy[:10], ensure_ascii=False),
+                    top_watch=json.dumps(top_watch[:10], ensure_ascii=False),
+                    duration_seconds=result.duration_seconds,
+                    status="success" if result.success else "failed",
+                    error_message=result.error or "",
+                )
+                session.add(history)
+                session.flush()
+
+                # 2. StockScoreHistory 저장
+                for d in decisions:
+                    score_record = StockScoreHistoryModel(
+                        stock_code=d.get("stock_code", ""),
+                        analysis_date=result.started_at,
+                        total_score=d.get("total_score", 0),
+                        material_grade=d.get("material_grade", ""),
+                        sentiment_stage=d.get("sentiment_stage", ""),
+                        recommendation=d.get("recommendation", ""),
+                        primary_sector=d.get("sector", ""),
+                        track_type=d.get("track_type", ""),
+                    )
+                    session.add(score_record)
+
+            self.logger.info(f"DB 저장 완료: 분석 1건, 종목 점수 {len(decisions)}건")
+
+        except Exception as e:
+            self.logger.error(f"DB 저장 실패 (파이프라인은 정상 완료): {e}")
+
     def _generate_summary(self, result: PipelineV2Result) -> dict:
         """결과 요약 생성"""
         summary = {
@@ -996,11 +1102,11 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Pipeline v2.0 테스트 실행")
-    parser.add_argument("--themes", type=int, default=6, help="최대 테마 수 (기본: 6)")
-    parser.add_argument("--stocks", type=int, default=30, help="최대 종목 수 (기본: 30)")
-    parser.add_argument("--stocks-per-theme", type=int, default=None, help="테마당 최대 종목 수 (기본: 제한 없음)")
+    parser.add_argument("--themes", type=int, default=30, help="최대 테마 수 (기본: 30)")
+    parser.add_argument("--stocks", type=int, default=50, help="최대 종목 수 (기본: 50)")
+    parser.add_argument("--stocks-per-theme", type=int, default=5, help="테마당 최대 종목 수 (기본: 5)")
     parser.add_argument("--skip-preflight", action="store_true", help="Preflight 건너뛰기")
-    parser.add_argument("--stage", type=str, default="1", help="실행할 최대 스테이지 (0, 1, 2, all)")
+    parser.add_argument("--stage", type=str, default="all", help="실행할 최대 스테이지 (0, 1, 2, all)")
     parser.add_argument("--debug", action="store_true", help="상세 데이터 흐름 출력 (입력→LLM→출력)")
     args = parser.parse_args()
 
@@ -1044,7 +1150,7 @@ if __name__ == "__main__":
             stage0 = pipeline._run_data_collect(
                 max_themes=args.themes,
                 max_stocks=args.stocks,
-                year=datetime.now().year,
+                year=datetime.now().year - 1 if datetime.now().month <= 3 else datetime.now().year,
                 verbose=True,
                 stocks_per_theme=args.stocks_per_theme,
             )
